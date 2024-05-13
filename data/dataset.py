@@ -6,7 +6,6 @@ from torchvision import transforms as T
 import torch.nn.functional as F
 import torchio as tio
 import os
-import matplotlib.pyplot as plt
 
 
 class MriKneeDataset(data.Dataset):
