@@ -7,5 +7,7 @@ data/splitted/*
 !data/raw/README.md
 !data/splitted/README.md
 
+exploration/*
+
 **/.DS_Store
 **/__pycache__

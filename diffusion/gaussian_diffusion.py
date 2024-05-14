@@ -185,39 +185,43 @@ class GaussianDiffusion(nn.Module):
         )
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    def model_predictions(self, x, t, x_self_cond=None, clip_x_start=False):
-        model_output = self.model(x, t, x_self_cond)
+    def model_predictions(
+        self, segmentation, raw, t, x_self_cond=None, clip_x_start=False
+    ):
+        model_output = self.model(segmentation, raw, t, x_self_cond)
         maybe_clip = (
             partial(torch.clamp, min=-1.0, max=1.0) if clip_x_start else identity
         )
 
         if self.objective == "pred_noise":
             pred_noise = model_output
-            x_start = self.predict_start_from_noise(x, t, pred_noise)
+            x_start = self.predict_start_from_noise(segmentation, t, pred_noise)
             x_start = maybe_clip(x_start)
 
         elif self.objective == "pred_x0":
             x_start = model_output
             x_start = maybe_clip(x_start)
-            pred_noise = self.predict_noise_from_start(x, t, x_start)
+            pred_noise = self.predict_noise_from_start(segmentation, t, x_start)
 
         elif self.objective == "pred_v":
             v = model_output
-            x_start = self.predict_start_from_v(x, t, v)
+            x_start = self.predict_start_from_v(segmentation, t, v)
             x_start = maybe_clip(x_start)
-            pred_noise = self.predict_noise_from_start(x, t, x_start)
+            pred_noise = self.predict_noise_from_start(segmentation, t, x_start)
 
         return ModelPrediction(pred_noise, x_start)
 
-    def p_mean_variance(self, x, t, x_self_cond=None, clip_denoised=True):
-        preds = self.model_predictions(x, t, x_self_cond)
+    def p_mean_variance(
+        self, segmentation, raw, t, x_self_cond=None, clip_denoised=True
+    ):
+        preds = self.model_predictions(segmentation, raw, t, x_self_cond)
         x_start = preds.pred_x_start
 
         if clip_denoised:
             x_start.clamp_(-1.0, 1.0)
 
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(
-            x_start=x_start, x_t=x, t=t
+            x_start=x_start, x_t=segmentation, t=t
         )
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
@@ -238,29 +242,48 @@ class GaussianDiffusion(nn.Module):
         return new_mean
 
     @torch.no_grad()
-    def p_sample(self, x, t: int, x_self_cond=None, cond_fn=None, guidance_kwargs=None):
-        b, *_, device = *x.shape, x.device
-        batched_times = torch.full((b,), t, device=x.device, dtype=torch.long)
+    def p_sample(
+        self,
+        segmentation,
+        raw,
+        t: int,
+        x_self_cond=None,
+        cond_fn=None,
+        guidance_kwargs=None,
+    ):
+        b, *_, device = *segmentation.shape, segmentation.device
+        batched_times = torch.full(
+            (b,), t, device=segmentation.device, dtype=torch.long
+        )
         model_mean, variance, model_log_variance, x_start = self.p_mean_variance(
-            x=x, t=batched_times, x_self_cond=x_self_cond, clip_denoised=True
+            segmentation=segmentation,
+            raw=raw,
+            t=batched_times,
+            x_self_cond=x_self_cond,
+            clip_denoised=True,
         )
         if exists(cond_fn) and exists(guidance_kwargs):
             model_mean = self.condition_mean(
-                cond_fn, model_mean, variance, x, batched_times, guidance_kwargs
+                cond_fn,
+                model_mean,
+                variance,
+                segmentation,
+                batched_times,
+                guidance_kwargs,
             )
 
-        noise = torch.randn_like(x) if t > 0 else 0.0  # no noise if t == 0
+        noise = torch.randn_like(segmentation) if t > 0 else 0.0  # no noise if t == 0
         pred_img = model_mean + (0.5 * model_log_variance).exp() * noise
         return pred_img, x_start
 
     @torch.no_grad()
     def p_sample_loop(
-        self, shape, return_all_timesteps=False, cond_fn=None, guidance_kwargs=None
+        self, raw, shape, return_all_timesteps=False, cond_fn=None, guidance_kwargs=None
     ):
         batch, device = shape[0], self.betas.device
 
-        img = torch.randn(shape, device=device)
-        imgs = [img]
+        segmentation = torch.randn(shape, device=device)
+        segmentations = [segmentation]
 
         x_start = None
 
@@ -270,17 +293,23 @@ class GaussianDiffusion(nn.Module):
             total=self.num_timesteps,
         ):
             self_cond = x_start if self.self_condition else None
-            img, x_start = self.p_sample(img, t, self_cond, cond_fn, guidance_kwargs)
-            imgs.append(img)
+            segmentation, x_start = self.p_sample(
+                segmentation, raw, t, self_cond, cond_fn, guidance_kwargs
+            )
+            segmentations.append(segmentation)
 
-        ret = img if not return_all_timesteps else torch.stack(imgs, dim=1)
+        ret = (
+            segmentation
+            if not return_all_timesteps
+            else torch.stack(segmentations, dim=1)
+        )
 
         ret = self.unnormalize(ret)
         return ret
 
     @torch.no_grad()
     def ddim_sample(
-        self, shape, return_all_timesteps=False, cond_fn=None, guidance_kwargs=None
+        self, raw, shape, return_all_timesteps=False, cond_fn=None, guidance_kwargs=None
     ):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = (
             shape[0],
@@ -299,8 +328,8 @@ class GaussianDiffusion(nn.Module):
             zip(times[:-1], times[1:])
         )  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
 
-        img = torch.randn(shape, device=device)
-        imgs = [img]
+        segmentation = torch.randn(shape, device=device)
+        segmentations = [segmentation]
 
         x_start = None
 
@@ -308,10 +337,10 @@ class GaussianDiffusion(nn.Module):
             time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
             pred_noise, x_start, *_ = self.model_predictions(
-                img, time_cond, self_cond, clip_x_start=True
+                segmentation, raw, time_cond, self_cond, clip_x_start=True
             )
 
-            imgs.append(img)
+            segmentations.append(segmentation)
 
             if time_next < 0:
                 img = x_start
@@ -329,7 +358,7 @@ class GaussianDiffusion(nn.Module):
 
             img = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
-        ret = img if not return_all_timesteps else torch.stack(imgs, dim=1)
+        ret = img if not return_all_timesteps else torch.stack(segmentations, dim=1)
 
         ret = self.unnormalize(ret)
         return ret
@@ -337,6 +366,7 @@ class GaussianDiffusion(nn.Module):
     @torch.no_grad()
     def sample(
         self,
+        raw,
         batch_size=16,
         return_all_timesteps=False,
         cond_fn=None,
@@ -347,6 +377,7 @@ class GaussianDiffusion(nn.Module):
             self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
         )
         return sample_fn(
+            raw,
             (batch_size, channels, image_size, image_size),
             return_all_timesteps=return_all_timesteps,
             cond_fn=cond_fn,
@@ -354,7 +385,7 @@ class GaussianDiffusion(nn.Module):
         )
 
     @torch.no_grad()
-    def interpolate(self, x1, x2, t=None, lam=0.5):
+    def interpolate(self, x1, x2, raw, t=None, lam=0.5):
         b, *_, device = *x1.shape, x1.device
         t = default(t, self.num_timesteps - 1)
 
@@ -371,7 +402,7 @@ class GaussianDiffusion(nn.Module):
             reversed(range(0, t)), desc="interpolation sample time step", total=t
         ):
             self_cond = x_start if self.self_condition else None
-            img, x_start = self.p_sample(img, i, self_cond)
+            img, x_start = self.p_sample(img, raw, i, self_cond)
 
         return img
 
@@ -384,13 +415,13 @@ class GaussianDiffusion(nn.Module):
             + extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def p_losses(self, x_start, t, noise=None):
+    def p_losses(self, raw, x_start, t, noise=None):
         b, c, h, w = x_start.shape
         noise = default(noise, lambda: torch.randn_like(x_start))
 
         # noise sample
 
-        x = self.q_sample(x_start=x_start, t=t, noise=noise)
+        segmentation = self.q_sample(x_start=x_start, t=t, noise=noise)
 
         # if doing self-conditioning, 50% of the time, predict x_start from current set of times
         # and condition with unet with that
@@ -399,12 +430,12 @@ class GaussianDiffusion(nn.Module):
         x_self_cond = None
         if self.self_condition and random() < 0.5:
             with torch.no_grad():
-                x_self_cond = self.model_predictions(x, t).pred_x_start
+                x_self_cond = self.model_predictions(segmentation, raw, t).pred_x_start
                 x_self_cond.detach_()
 
         # predict and take gradient step
 
-        model_out = self.model(x, t, x_self_cond)
+        model_out = self.model(segmentation, raw, t, x_self_cond)
 
         if self.objective == "pred_noise":
             target = noise
@@ -424,6 +455,7 @@ class GaussianDiffusion(nn.Module):
 
     def forward(self, img, *args, **kwargs):
         (
+            raw,
             b,
             c,
             h,
@@ -440,5 +472,5 @@ class GaussianDiffusion(nn.Module):
         ), f"height and width of image must be {img_size}"
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
-        img = self.normalize(img)
-        return self.p_losses(img, t, *args, **kwargs)
+        segmentation = self.normalize(img)
+        return self.p_losses(segmentation, raw, t, *args, **kwargs)

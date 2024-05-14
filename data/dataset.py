@@ -54,11 +54,22 @@ class MriKneeDataset(data.Dataset):
                 self.latest_subject = self.transformations(self.latest_subject)
 
         raw_img = self.latest_subject.raw_img.data.squeeze()[slice_index, :, :]
+        raw_img = raw_img.unsqueeze(0)
         mask = F.one_hot(
             self.latest_subject.mask_img.data.squeeze().to(dtype=torch.int64)[
                 slice_index, :, :
             ],
             num_classes=6,
         )
+        mask = mask.permute(2, 0, 1)
 
         return raw_img, mask, slice_index
+
+
+dataset = MriKneeDataset(
+    "/Users/jperic/private/knee_seg_diff/data/splitted/train",
+    "/Users/jperic/private/knee_seg_diff/data/splitted/train_masks",
+)
+
+print(dataset.__getitem__(2)[0].shape)
+print(dataset.__getitem__(2)[1].shape)
