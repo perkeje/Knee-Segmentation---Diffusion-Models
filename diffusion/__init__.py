@@ -1,1 +1,1 @@
-import gaussian_diffusion
+from .gaussian_diffusion import GaussianDiffusion

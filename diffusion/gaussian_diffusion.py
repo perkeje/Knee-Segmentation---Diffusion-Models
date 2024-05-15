@@ -16,7 +16,6 @@ from utils import exists, extract, default, identity
 from collections import namedtuple
 from einops import reduce
 
-__version__ = "0.1"
 ModelPrediction = namedtuple("ModelPrediction", ["pred_noise", "pred_x_start"])
 
 
@@ -453,9 +452,8 @@ class GaussianDiffusion(nn.Module):
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
-    def forward(self, img, *args, **kwargs):
+    def forward(self, segmentation, raw, *args, **kwargs):
         (
-            raw,
             b,
             c,
             h,
@@ -463,8 +461,8 @@ class GaussianDiffusion(nn.Module):
             device,
             img_size,
         ) = (
-            *img.shape,
-            img.device,
+            *segmentation.shape,
+            segmentation.device,
             self.image_size,
         )
         assert (
@@ -472,5 +470,5 @@ class GaussianDiffusion(nn.Module):
         ), f"height and width of image must be {img_size}"
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
-        segmentation = self.normalize(img)
+        segmentation = self.normalize(segmentation)
         return self.p_losses(segmentation, raw, t, *args, **kwargs)

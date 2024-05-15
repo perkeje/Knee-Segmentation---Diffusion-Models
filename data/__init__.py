@@ -1,1 +1,1 @@
-from dataset import MriKneeDataset
+from .dataset import MriKneeDataset
