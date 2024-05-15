@@ -6,6 +6,7 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 from utils import default
 from utils import exists
+from torchvision.transforms import Normalize
 
 
 class DynamicConditionalEncoding(nn.Module):
@@ -248,6 +249,8 @@ class Unet(nn.Module):
     def __init__(
         self,
         dim,
+        norm_mean,
+        norm_std,
         img_size=384,
         init_dim=None,
         out_dim=None,
@@ -262,9 +265,10 @@ class Unet(nn.Module):
         super().__init__()
 
         # determine dimensions
-
         self.channels = channels
         self.self_condition = self_condition
+        self.mean = norm_mean
+        self.std = norm_std
         input_channels = channels * (2 if self_condition else 1)
 
         init_dim = default(init_dim, dim)
@@ -373,6 +377,9 @@ class Unet(nn.Module):
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
     def forward(self, segmentation, raw, time):
+
+        y = Normalize(self.mean, self.std)(raw)
+
         x = self.init_conv_segmentation(segmentation)
         y = self.init_conv_raw(raw)
 
