@@ -5,11 +5,10 @@ from torch import nn
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
 from tqdm.auto import tqdm
-from schedules import (
+from .schedules import (
     cosine_beta_schedule,
     linear_beta_schedule,
     sigmoid_beta_schedule,
-    extract,
 )
 from utils.preprocessing import normalize_to_neg_one_to_one, unnormalize_to_zero_to_one
 from utils import exists, extract, default, identity

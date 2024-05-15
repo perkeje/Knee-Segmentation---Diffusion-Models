@@ -336,10 +336,12 @@ class Unet(nn.Module):
                         ResnetBlock(dim_in, dim_in, time_emb_dim=time_dim),
                         Residual(PreNorm(dim_in, LinearAttention(dim_in))),
                         (
-                            (
-                                SegmentationStep(dim_in, dim_in, img_size),
-                                Downsample(dim_in, dim_out),
-                            )
+                            SegmentationStep(dim_in, dim_in, img_size)
+                            if not is_last
+                            else nn.Conv2d(dim_in, dim_out, 3, padding=1)
+                        ),
+                        (
+                            Downsample(dim_in, dim_out)
                             if not is_last
                             else nn.Conv2d(dim_in, dim_out, 3, padding=1)
                         ),

@@ -1,8 +1,6 @@
 import os
-import math
 import json
 import torch
-from torch import nn
 from torch.utils.data import DataLoader, random_split
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -12,13 +10,10 @@ from tqdm.auto import tqdm
 from accelerate import Accelerator
 from pathlib import Path
 from data import MriKneeDataset
-from diffusion.gaussian_diffusion import GaussianDiffusion
-from unet.unet import Unet
-from utils import cycle, has_int_squareroot, num_to_groups
+from utils import cycle
 from ema_pytorch import EMA
 
 from utils.postprocessing import apply_argmax_and_coloring
-from utils.preprocessing import compute_mean_std
 
 
 class Trainer:
@@ -273,39 +268,3 @@ class Trainer:
                     break
 
         accelerator.print("Training complete")
-
-
-if __name__ == "__main__":
-    mean, std = compute_mean_std("../data/splitted/train")
-    model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=mean, norm_std=std)
-    image_size = 384
-    diffusion = GaussianDiffusion(
-        model, image_size=image_size, timesteps=1000  # number of steps
-    )
-
-    trainer = Trainer(
-        diffusion_model=diffusion,
-        train_segmentations_folder="../data/splitted/train_masks",
-        train_images_folder="../data/splitted/train",
-        test_segmentations_folder="../data/splitted/test_masks",
-        test_images_folder="./data/splitted/test",
-        train_batch_size=1,
-        val_split=0.4,
-        gradient_accumulate_every=1,
-        train_lr=1e-4,
-        epochs=1000,
-        ema_update_every=10,
-        ema_decay=0.995,
-        adam_betas=(0.9, 0.99),
-        save_and_sample_every=20,
-        results_folder="../results",
-        amp=True,
-        patience=15,
-        reduce_lr_patience=10,
-        checkpoint_folder="./results/checkpoints",
-        best_checkpoint="best_checkpoint.pt",
-        last_checkpoint="last_checkpoint.pt",
-        loss_log="loss_log.json",
-    )
-
-    trainer.train()

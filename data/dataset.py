@@ -64,12 +64,3 @@ class MriKneeDataset(data.Dataset):
         mask = mask.permute(2, 0, 1)
 
         return raw_img, mask, slice_index
-
-
-dataset = MriKneeDataset(
-    "/Users/jperic/private/knee_seg_diff/data/splitted/train",
-    "/Users/jperic/private/knee_seg_diff/data/splitted/train_masks",
-)
-
-print(dataset.__getitem__(2)[0].shape)
-print(dataset.__getitem__(2)[1].shape)
