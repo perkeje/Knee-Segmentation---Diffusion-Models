@@ -276,7 +276,7 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    mean, std = compute_mean_std("./data/splitted/trai")
+    mean, std = compute_mean_std("../data/splitted/train")
     model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=mean, norm_std=std)
     image_size = 384
     diffusion = GaussianDiffusion(
@@ -285,9 +285,9 @@ if __name__ == "__main__":
 
     trainer = Trainer(
         diffusion_model=diffusion,
-        train_segmentations_folder="./data/splitted/train_masks",
-        train_images_folder="./data/splitted/train",
-        test_segmentations_folder="./data/splitted/test_masks",
+        train_segmentations_folder="../data/splitted/train_masks",
+        train_images_folder="../data/splitted/train",
+        test_segmentations_folder="../data/splitted/test_masks",
         test_images_folder="./data/splitted/test",
         train_batch_size=1,
         val_split=0.4,
@@ -298,7 +298,7 @@ if __name__ == "__main__":
         ema_decay=0.995,
         adam_betas=(0.9, 0.99),
         save_and_sample_every=20,
-        results_folder="./results",
+        results_folder="../results",
         amp=True,
         patience=15,
         reduce_lr_patience=10,
