@@ -183,10 +183,8 @@ class GaussianDiffusion(nn.Module):
         )
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    def model_predictions(
-        self, segmentation, raw, t, x_self_cond=None, clip_x_start=False
-    ):
-        model_output = self.model(segmentation, raw, t, x_self_cond)
+    def model_predictions(self, segmentation, raw, t, clip_x_start=False):
+        model_output = self.model(segmentation, raw, t)
         maybe_clip = (
             partial(torch.clamp, min=-1.0, max=1.0) if clip_x_start else identity
         )
@@ -212,7 +210,7 @@ class GaussianDiffusion(nn.Module):
     def p_mean_variance(
         self, segmentation, raw, t, x_self_cond=None, clip_denoised=True
     ):
-        preds = self.model_predictions(segmentation, raw, t, x_self_cond)
+        preds = self.model_predictions(segmentation, raw, t)
         x_start = preds.pred_x_start
 
         if clip_denoised:
@@ -335,7 +333,7 @@ class GaussianDiffusion(nn.Module):
             time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
             pred_noise, x_start, *_ = self.model_predictions(
-                segmentation, raw, time_cond, self_cond, clip_x_start=True
+                segmentation, raw, time_cond, clip_x_start=True
             )
 
             segmentations.append(segmentation)
@@ -433,7 +431,7 @@ class GaussianDiffusion(nn.Module):
 
         # predict and take gradient step
 
-        model_out = self.model(segmentation, raw, t, x_self_cond)
+        model_out = self.model(segmentation, raw, t)
 
         if self.objective == "pred_noise":
             target = noise
@@ -470,4 +468,4 @@ class GaussianDiffusion(nn.Module):
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
         segmentation = self.normalize(segmentation)
-        return self.p_losses(segmentation, raw, t, *args, **kwargs)
+        return self.p_losses(raw, segmentation, t, *args, **kwargs)

@@ -24,7 +24,7 @@ if __name__ == "__main__":
         test_segmentations_folder="./data/splitted/test_masks",
         test_images_folder="./data/splitted/test",
         train_batch_size=1,
-        val_split=0.4,
+        val_split=0.5,
         gradient_accumulate_every=1,
         train_lr=1e-4,
         epochs=1000,

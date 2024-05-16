@@ -176,17 +176,17 @@ class Trainer:
         accelerator = self.accelerator
         device = accelerator.device
 
-        with tqdm(
-            initial=self.step,
-            total=self.epochs,
-            disable=not accelerator.is_main_process,
-        ) as pbar:
-            for epoch in range(self.epochs):
-                self.model.train()
-                total_loss = 0.0
-                num_batches = 0
+        for epoch in range(self.epochs):
+            self.model.train()
+            total_loss = 0.0
+            num_batches = 0
 
-                for _ in range(len(self.train_dl) // self.gradient_accumulate_every):
+            with tqdm(
+                total=len(self.ds),
+                desc=f"Epoch {epoch + 1}/{self.epochs}",
+                disable=not accelerator.is_main_process,
+            ) as epoch_pbar:
+                for _ in range(len(self.ds) // self.gradient_accumulate_every):
                     for _ in range(self.gradient_accumulate_every):
                         data = next(self.train_dl)
                         segmentation = data[1].to(device)
@@ -204,52 +204,48 @@ class Trainer:
                     self.step += 1
                     num_batches += 1
 
-                train_loss = total_loss / num_batches
+                    epoch_pbar.update(self.batch_size)
+                    epoch_pbar.set_postfix(train_loss=total_loss / num_batches)
 
-                # Validation
-                self.model.eval()
-                val_loss = 0.0
+            train_loss = total_loss / num_batches
+
+            # Validation
+            self.model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for data in self.val_dl:
+                    segmentation = data[1].to(device)
+                    raw = data[0].to(device)
+                    with autocast():
+                        loss = self.model(segmentation, raw)
+                    val_loss += loss.item()
+            val_loss /= len(self.val_dl)
+
+            self.loss_log.append(
+                {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss}
+            )
+            self.scheduler.step(val_loss)
+
+            epoch_pbar.set_postfix(train_loss=train_loss, val_loss=val_loss)
+
+            # Save checkpoints
+            if (epoch + 1) % self.save_and_sample_every == 0:
+                self.ema.update()
+                self.ema.ema_model.eval()
+
                 with torch.no_grad():
-                    for data in self.val_dl:
-                        segmentation = data[1].to(device)
-                        raw = data[0].to(device)
-                        with autocast():
-                            loss = self.model(segmentation, raw)
-                        val_loss += loss.item()
-                val_loss /= len(self.val_dl)
+                    milestone = (epoch + 1) // self.save_and_sample_every
+                    validation_sample = self.val_ds[80]
+                    raw = validation_sample[0].unsqueeze(0).to(device)
+                    sampled_images = self.ema.ema_model.sample(raw=raw, batch_size=1)
 
-                self.loss_log.append(
-                    {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss}
-                )
-                self.scheduler.step(val_loss)
+                    # Apply argmax and coloring
+                    colored_sampled_images = apply_argmax_and_coloring(sampled_images)
 
-                pbar.set_description(
-                    f"Epoch {epoch+1}/{self.epochs}, train loss: {train_loss:.4f}, val loss: {val_loss:.4f}"
-                )
-                pbar.update(1)
-
-                # Save checkpoints
-                if (epoch + 1) % self.save_and_sample_every == 0:
-                    self.ema.update()
-                    self.ema.ema_model.eval()
-
-                    with torch.no_grad():
-                        milestone = (epoch + 1) // self.save_and_sample_every
-                        validation_sample = self.val_ds[80]
-                        raw = validation_sample[0].unsqueeze(0).to(device)
-                        sampled_images = self.ema.ema_model.sample(
-                            raw=raw, batch_size=1
-                        )
-
-                        # Apply argmax and coloring
-                        colored_sampled_images = apply_argmax_and_coloring(
-                            sampled_images
-                        )
-
-                        utils.save_image(
-                            colored_sampled_images,
-                            str(self.results_folder / f"sample-{milestone}.png"),
-                        )
+                    utils.save_image(
+                        colored_sampled_images,
+                        str(self.results_folder / f"sample-{milestone}.png"),
+                    )
 
                 # Save best and last checkpoints
                 if val_loss < self.best_loss:

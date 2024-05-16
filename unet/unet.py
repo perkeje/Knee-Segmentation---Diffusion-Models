@@ -9,6 +9,14 @@ from utils import exists
 from torchvision.transforms import Normalize
 
 
+class NoSegmentatioStep(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, image_features, _):
+        return image_features
+
+
 class DynamicConditionalEncoding(nn.Module):
     def __init__(self, feature_channels):
         super().__init__()
@@ -326,7 +334,7 @@ class Unet(nn.Module):
                     ]
                 )
             )
-
+        current_img_size = img_size
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
             self.raw_downs.append(
@@ -336,9 +344,9 @@ class Unet(nn.Module):
                         ResnetBlock(dim_in, dim_in, time_emb_dim=time_dim),
                         Residual(PreNorm(dim_in, LinearAttention(dim_in))),
                         (
-                            SegmentationStep(dim_in, dim_in, img_size)
+                            SegmentationStep(dim_in, current_img_size, current_img_size)
                             if not is_last
-                            else nn.Conv2d(dim_in, dim_out, 3, padding=1)
+                            else NoSegmentatioStep()
                         ),
                         (
                             Downsample(dim_in, dim_out)
@@ -348,11 +356,13 @@ class Unet(nn.Module):
                     ]
                 )
             )
+            current_img_size = current_img_size // 2
 
-        mid_dim = dims[-1]
+        mid_dim = dims[-1] * 2
         self.mid_block1 = ResnetBlock(mid_dim, mid_dim, time_emb_dim=time_dim)
         self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim)))
         self.mid_block2 = ResnetBlock(mid_dim, mid_dim, time_emb_dim=time_dim)
+        self.mid_last_conv = nn.Conv2d(mid_dim, dims[-1], 3, padding=1)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind == (len(in_out) - 1)
@@ -360,8 +370,8 @@ class Unet(nn.Module):
             self.ups.append(
                 nn.ModuleList(
                     [
-                        ResnetBlock(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                        ResnetBlock(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
+                        ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim),
+                        ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim),
                         Residual(PreNorm(dim_out, LinearAttention(dim_out))),
                         (
                             Upsample(dim_out, dim_in)
@@ -375,7 +385,7 @@ class Unet(nn.Module):
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
 
-        self.final_res_block = ResnetBlock(dim * 2, dim, time_emb_dim=time_dim)
+        self.final_res_block = ResnetBlock(dim, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
     def forward(self, segmentation, raw, time):
@@ -383,7 +393,7 @@ class Unet(nn.Module):
         y = Normalize(self.mean, self.std)(raw)
 
         x = self.init_conv_segmentation(segmentation)
-        y = self.init_conv_raw(raw)
+        y = self.init_conv_raw(y)
 
         t = self.time_mlp(time)
 
@@ -405,7 +415,7 @@ class Unet(nn.Module):
 
             y = block2(y, t)
             y = attn(y)
-            y = segmentation_step(y, h.pop())
+            y = segmentation_step(y, h.pop(0))
 
             y = downsample(y)
 
@@ -413,6 +423,7 @@ class Unet(nn.Module):
         x = self.mid_block1(x, t)
         x = self.mid_attn(x)
         x = self.mid_block2(x, t)
+        x = self.mid_last_conv(x)
 
         for block1, block2, attn, upsample in self.ups:
             # x = torch.cat((x, h.pop()), dim=1)
