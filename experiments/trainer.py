@@ -26,18 +26,17 @@ class Trainer:
         test_images_folder,
         *,
         train_batch_size=16,
-        val_split=0.4,
-        gradient_accumulate_every=1,
+        val_images=1,
         train_lr=1e-4,
         epochs=1000,
-        ema_update_every=10,
+        ema_update_every=160,
         ema_decay=0.995,
         adam_betas=(0.9, 0.99),
         save_and_sample_every=20,
         results_folder="./results",
         amp=True,
-        patience=15,
-        reduce_lr_patience=10,
+        patience=10,
+        reduce_lr_patience=5,
         checkpoint_folder="./results/checkpoints",
         best_checkpoint="best_checkpoint.pt",
         last_checkpoint="last_checkpoint.pt",
@@ -53,7 +52,6 @@ class Trainer:
         self.save_and_sample_every = save_and_sample_every
 
         self.batch_size = train_batch_size
-        self.gradient_accumulate_every = gradient_accumulate_every
 
         self.epochs = epochs
         self.train_lr = train_lr
@@ -69,8 +67,9 @@ class Trainer:
             test_images_folder,
             test_segmentations_folder,
         )
-
-        test, self.val_ds = random_split(self.test_ds, [1 - val_split, val_split])
+        self.val_ds, self.test_ds = random_split(
+            self.test_ds, [val_images * 160, len(self.test_ds) - (val_images * 160)]
+        )
         print(
             "Training size: "
             + str(len(self.ds))
@@ -95,7 +94,6 @@ class Trainer:
 
         self.train_dl = self.accelerator.prepare(self.train_dl)
         self.val_dl = self.accelerator.prepare(self.val_dl)
-        self.train_dl = cycle(self.train_dl)
 
         # optimizer
         self.opt = Adam(diffusion_model.parameters(), lr=train_lr, betas=adam_betas)
@@ -186,24 +184,20 @@ class Trainer:
                 desc=f"Epoch {epoch + 1}/{self.epochs}",
                 disable=not accelerator.is_main_process,
             ) as epoch_pbar:
-                for _ in range(len(self.ds) // self.gradient_accumulate_every):
-                    for _ in range(self.gradient_accumulate_every):
-                        data = next(self.train_dl)
-                        segmentation = data[1].to(device)
-                        raw = data[0].to(device)
-                        with autocast():
-                            loss = self.model(segmentation, raw)
-                            loss = loss / self.gradient_accumulate_every
-                            total_loss += loss.item()
+                for data in self.train_dl:
+                    segmentation = data[1].to(device)
+                    raw = data[0].to(device)
+                    with accelerator.autocast():
+                        loss = self.model(segmentation, raw)
+                        total_loss += loss.item()
 
-                        self.accelerator.backward(loss)
+                    self.accelerator.backward(loss)
 
                     accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.opt.step()
                     self.opt.zero_grad()
                     self.step += 1
                     num_batches += 1
-
                     epoch_pbar.update(self.batch_size)
                     epoch_pbar.set_postfix(train_loss=total_loss / num_batches)
 
@@ -212,21 +206,22 @@ class Trainer:
             # Validation
             self.model.eval()
             val_loss = 0.0
+            print("Validating...")
             with torch.no_grad():
                 for data in self.val_dl:
                     segmentation = data[1].to(device)
                     raw = data[0].to(device)
-                    with autocast():
+                    with accelerator.autocast():
                         loss = self.model(segmentation, raw)
                     val_loss += loss.item()
             val_loss /= len(self.val_dl)
 
             self.loss_log.append(
-                {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss}
+                {"epoch": epoch + 1, "train_loss": train_loss, "val_loss": val_loss}
             )
             self.scheduler.step(val_loss)
 
-            epoch_pbar.set_postfix(train_loss=train_loss, val_loss=val_loss)
+            print("Val loss: " + str(val_loss))
 
             # Save checkpoints
             if (epoch + 1) % self.save_and_sample_every == 0:
@@ -235,32 +230,36 @@ class Trainer:
 
                 with torch.no_grad():
                     milestone = (epoch + 1) // self.save_and_sample_every
-                    validation_sample = self.val_ds[80]
+                    validation_sample = self.val_ds[
+                        0
+                    ]  # Assuming the first validation sample is used
                     raw = validation_sample[0].unsqueeze(0).to(device)
                     sampled_images = self.ema.ema_model.sample(raw=raw, batch_size=1)
 
                     # Apply argmax and coloring
-                    colored_sampled_images = apply_argmax_and_coloring(sampled_images)
+                    colored_sampled_images = (
+                        apply_argmax_and_coloring(sampled_images) / 255.0
+                    )
 
                     utils.save_image(
                         colored_sampled_images,
                         str(self.results_folder / f"sample-{milestone}.png"),
                     )
 
-                # Save best and last checkpoints
-                if val_loss < self.best_loss:
-                    self.best_loss = val_loss
-                    self.save(self.best_checkpoint_path)
-                    self.no_improvement_epochs = 0
-                else:
-                    self.no_improvement_epochs += 1
+            # Save best and last checkpoints
+            if val_loss < self.best_loss:
+                self.best_loss = val_loss
+                self.save(self.best_checkpoint_path)
+                self.no_improvement_epochs = 0
+            else:
+                self.no_improvement_epochs += 1
 
-                self.save(self.last_checkpoint_path)
-                self.save_loss_log()
+            self.save(self.last_checkpoint_path)
+            self.save_loss_log()
 
-                # Early stopping
-                if self.no_improvement_epochs >= self.patience:
-                    print(f"Early stopping at epoch {epoch}")
-                    break
+            # Early stopping
+            if self.no_improvement_epochs >= self.patience:
+                print(f"Early stopping at epoch {epoch + 1}")
+                break
 
-        accelerator.print("Training complete")
+        accelerator.print("training complete")

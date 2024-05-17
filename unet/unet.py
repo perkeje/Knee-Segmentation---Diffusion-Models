@@ -370,8 +370,10 @@ class Unet(nn.Module):
             self.ups.append(
                 nn.ModuleList(
                     [
-                        ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim),
-                        ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim),
+                        ResnetBlock(
+                            dim_out + dim_in, dim_out + dim_in, time_emb_dim=time_dim
+                        ),
+                        ResnetBlock(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         Residual(PreNorm(dim_out, LinearAttention(dim_out))),
                         (
                             Upsample(dim_out, dim_in)
@@ -416,7 +418,7 @@ class Unet(nn.Module):
             y = block2(y, t)
             y = attn(y)
             y = segmentation_step(y, h.pop(0))
-
+            h.append(y)
             y = downsample(y)
 
         x = torch.cat((x, y), dim=1)
@@ -426,7 +428,7 @@ class Unet(nn.Module):
         x = self.mid_last_conv(x)
 
         for block1, block2, attn, upsample in self.ups:
-            # x = torch.cat((x, h.pop()), dim=1)
+            x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
 
             # x = torch.cat((x, h.pop()), dim=1)
