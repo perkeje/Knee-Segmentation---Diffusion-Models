@@ -24,12 +24,13 @@ class GaussianDiffusion(nn.Module):
         model,
         *,
         image_size,
+        class_weights=torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
         timesteps=1000,
-        sampling_timesteps=None,
-        objective="pred_noise",
+        sampling_timesteps=500,
+        objective="pred_x0",
         beta_schedule="sigmoid",
         schedule_fn_kwargs=dict(),
-        ddim_sampling_eta=0.0,
+        ddim_sampling_eta=0.1,
         auto_normalize=True,
         min_snr_loss_weight=False,
         min_snr_gamma=5,
@@ -37,11 +38,12 @@ class GaussianDiffusion(nn.Module):
         super().__init__()
         assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim)
         assert not model.random_or_learned_sinusoidal_cond
-
         self.model = model
         self.channels = self.model.channels
         self.self_condition = self.model.self_condition
-
+        # Just to set class weights to appropriate device
+        self.first_loss = True
+        self.class_weights = class_weights
         self.image_size = image_size
 
         self.objective = objective
@@ -292,7 +294,8 @@ class GaussianDiffusion(nn.Module):
             segmentation, x_start = self.p_sample(
                 segmentation, raw, t, self_cond, cond_fn, guidance_kwargs
             )
-            segmentations.append(segmentation)
+            if return_all_timesteps and t % 100 == 0:
+                segmentations.append(segmentation)
 
         ret = (
             segmentation
@@ -350,7 +353,7 @@ class GaussianDiffusion(nn.Module):
             )
             c = (1 - alpha_next - sigma**2).sqrt()
 
-            noise = torch.randn_like(img)
+            noise = torch.randn_like(segmentation)
 
             img = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
@@ -412,25 +415,30 @@ class GaussianDiffusion(nn.Module):
         )
 
     def p_losses(self, raw, x_start, t, noise=None):
+        if self.first_loss and self.class_weights.device != x_start.device:
+            self.class_weights = self.class_weights.to(x_start.device)
+            self.first_loss = False
+
         b, c, h, w = x_start.shape
+
+        # Ensure the number of channels (c) matches the number of classes
+        assert (
+            c == 6
+        ), "Number of channels (c) must be equal to the number of classes (6)"
+
         noise = default(noise, lambda: torch.randn_like(x_start))
 
-        # noise sample
-
+        # Sample noisy image
         segmentation = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-        # if doing self-conditioning, 50% of the time, predict x_start from current set of times
-        # and condition with unet with that
-        # this technique will slow down training by 25%, but seems to lower FID significantly
-
+        # Self-conditioning (if applicable)
         x_self_cond = None
-        if self.self_condition and random() < 0.5:
+        if self.self_condition and random.random() < 0.5:
             with torch.no_grad():
                 x_self_cond = self.model_predictions(segmentation, raw, t).pred_x_start
                 x_self_cond.detach_()
 
-        # predict and take gradient step
-
+        # Predict and take gradient step
         model_out = self.model(segmentation, raw, t)
 
         if self.objective == "pred_noise":
@@ -443,8 +451,19 @@ class GaussianDiffusion(nn.Module):
         else:
             raise ValueError(f"unknown objective {self.objective}")
 
-        loss = F.mse_loss(model_out, target, reduction="none")
-        loss = reduce(loss, "b ... -> b", "mean")
+        # Calculate individual channel losses
+        channel_losses = F.mse_loss(
+            model_out, target, reduction="none"
+        )  # Shape: (b, c, h, w)
+
+        # Reshape the weights to (1, c, 1, 1)
+        reshaped_class_weights = self.class_weights.view(1, c, 1, 1)
+
+        # Apply weights to each channel loss
+        weighted_loss = channel_losses * reshaped_class_weights
+
+        # Reduce loss (e.g., mean across channels, height, and width)
+        loss = reduce(weighted_loss, "b c h w -> b", "mean")
 
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()

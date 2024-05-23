@@ -3,7 +3,7 @@ import json
 import torch
 from torch.utils.data import DataLoader, random_split
 from torch.optim import Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import StepLR
 from torch.cuda.amp import GradScaler, autocast
 from torchvision import utils
 from tqdm.auto import tqdm
@@ -26,19 +26,19 @@ class Trainer:
         test_images_folder,
         *,
         train_batch_size=16,
-        val_images=1,
+        # val_images=20,
         train_lr=1e-4,
-        epochs=1000,
-        ema_update_every=160,
+        epochs=500,
+        ema_update_every=2,
         ema_decay=0.995,
         adam_betas=(0.9, 0.99),
         save_and_sample_every=20,
         results_folder="./results",
         amp=True,
-        patience=10,
-        reduce_lr_patience=5,
+        # patience=10,
+        # reduce_lr_patience=5,
         checkpoint_folder="./results/checkpoints",
-        best_checkpoint="best_checkpoint.pt",
+        # best_checkpoint="best_checkpoint.pt",
         last_checkpoint="last_checkpoint.pt",
         loss_log="loss_log.json",
     ):
@@ -67,33 +67,33 @@ class Trainer:
             test_images_folder,
             test_segmentations_folder,
         )
-        self.val_ds, self.test_ds = random_split(
-            self.test_ds, [val_images * 160, len(self.test_ds) - (val_images * 160)]
-        )
-        print(
-            "Training size: "
-            + str(len(self.ds))
-            + "\nValidation size: "
-            + str(len(self.val_ds))
-        )
+        # self.val_ds, self.test_ds = random_split(
+        #     self.test_ds, [val_images, len(self.test_ds) - val_images]
+        # )
+        # print(
+        #     "Training size: "
+        #     + str(len(self.ds))
+        #     + "\nValidation size: "
+        #     + str(len(self.val_ds))
+        # )
         self.train_dl = DataLoader(
             self.ds,
             batch_size=train_batch_size,
-            shuffle=False,
+            shuffle=True,
             pin_memory=True,
-            num_workers=os.cpu_count(),
+            num_workers=4,
         )
 
-        self.val_dl = DataLoader(
-            self.val_ds,
-            batch_size=train_batch_size,
-            shuffle=False,
-            pin_memory=True,
-            num_workers=os.cpu_count(),
-        )
+        # self.val_dl = DataLoader(
+        #     self.val_ds,
+        #     batch_size=train_batch_size,
+        #     shuffle=True,
+        #     pin_memory=True,
+        #     num_workers=4,
+        # )
 
         self.train_dl = self.accelerator.prepare(self.train_dl)
-        self.val_dl = self.accelerator.prepare(self.val_dl)
+        # self.val_dl = self.accelerator.prepare(self.val_dl)
 
         # optimizer
         self.opt = Adam(diffusion_model.parameters(), lr=train_lr, betas=adam_betas)
@@ -107,7 +107,7 @@ class Trainer:
         self.checkpoint_folder = Path(checkpoint_folder)
         self.checkpoint_folder.mkdir(exist_ok=True)
 
-        self.best_checkpoint_path = self.checkpoint_folder / best_checkpoint
+        # self.best_checkpoint_path = self.checkpoint_folder / best_checkpoint
         self.last_checkpoint_path = self.checkpoint_folder / last_checkpoint
         self.loss_log_path = self.checkpoint_folder / loss_log
 
@@ -118,12 +118,10 @@ class Trainer:
         self.ema = EMA(diffusion_model, beta=ema_decay, update_every=ema_update_every)
 
         # Scheduler and early stopping
-        self.scheduler = ReduceLROnPlateau(
-            self.opt, patience=reduce_lr_patience, verbose=True
-        )
-        self.patience = patience
-        self.best_loss = float("inf")
-        self.no_improvement_epochs = 0
+        self.scheduler = StepLR(self.opt, step_size=int(0.05 * self.epochs), gamma=0.95)
+        # self.patience = patience
+        # self.best_loss = float("inf")
+        # self.no_improvement_epochs = 0
 
         # Loss log
         self.loss_log = []
@@ -142,11 +140,9 @@ class Trainer:
             "opt": self.opt.state_dict(),
             "ema": self.ema.state_dict(),
             "scaler": self.scaler.state_dict(),
-            "best_loss": self.best_loss,
-            "no_improvement_epochs": self.no_improvement_epochs,
+            # "best_loss": self.best_loss,
             "loss_log": self.loss_log,
         }
-
         torch.save(data, str(path))
 
     def load(self, path):
@@ -162,8 +158,7 @@ class Trainer:
         self.opt.load_state_dict(data["opt"])
         self.ema.load_state_dict(data["ema"])
         self.scaler.load_state_dict(data["scaler"])
-        self.best_loss = data["best_loss"]
-        self.no_improvement_epochs = data["no_improvement_epochs"]
+        # self.best_loss = data["best_loss"]
         self.loss_log = data["loss_log"]
 
     def save_loss_log(self):
@@ -174,7 +169,7 @@ class Trainer:
         accelerator = self.accelerator
         device = accelerator.device
 
-        for epoch in range(self.epochs):
+        for epoch in range(self.step // self.ds.__len__(), self.epochs):
             self.model.train()
             total_loss = 0.0
             num_batches = 0
@@ -199,29 +194,29 @@ class Trainer:
                     self.step += 1
                     num_batches += 1
                     epoch_pbar.update(self.batch_size)
-                    epoch_pbar.set_postfix(train_loss=total_loss / num_batches)
+                    train_loss = total_loss / num_batches
+                    epoch_pbar.set_postfix(
+                        train_loss=train_loss, lr=self.scheduler.get_last_lr()
+                    )
 
-            train_loss = total_loss / num_batches
+                # Validation
+                # self.model.eval()
+                # val_loss = 0.0
+                # print("Validating...")
+                # with torch.no_grad():
+                #     for data in tqdm(self.val_dl):
+                #         segmentation = data[1].to(device)
+                #         raw = data[0].to(device)
+                #         with accelerator.autocast():
+                #             loss = self.model(segmentation, raw)
+                #         val_loss += loss.item()
+                # val_loss /= len(self.val_dl)
+                self.scheduler.step()
+                # print(val_loss)
 
-            # Validation
-            self.model.eval()
-            val_loss = 0.0
-            print("Validating...")
-            with torch.no_grad():
-                for data in self.val_dl:
-                    segmentation = data[1].to(device)
-                    raw = data[0].to(device)
-                    with accelerator.autocast():
-                        loss = self.model(segmentation, raw)
-                    val_loss += loss.item()
-            val_loss /= len(self.val_dl)
+            self.loss_log.append({"epoch": epoch + 1, "train_loss": train_loss})
 
-            self.loss_log.append(
-                {"epoch": epoch + 1, "train_loss": train_loss, "val_loss": val_loss}
-            )
-            self.scheduler.step(val_loss)
-
-            print("Val loss: " + str(val_loss))
+            # print("Val loss: " + str(val_loss))
 
             # Save checkpoints
             if (epoch + 1) % self.save_and_sample_every == 0:
@@ -230,7 +225,7 @@ class Trainer:
 
                 with torch.no_grad():
                     milestone = (epoch + 1) // self.save_and_sample_every
-                    validation_sample = self.val_ds[
+                    validation_sample = self.test_ds[
                         0
                     ]  # Assuming the first validation sample is used
                     raw = validation_sample[0].unsqueeze(0).to(device)
@@ -247,19 +242,19 @@ class Trainer:
                     )
 
             # Save best and last checkpoints
-            if val_loss < self.best_loss:
-                self.best_loss = val_loss
-                self.save(self.best_checkpoint_path)
-                self.no_improvement_epochs = 0
-            else:
-                self.no_improvement_epochs += 1
+            # if val_loss < self.best_loss:
+            #     self.best_loss = val_loss
+            #     self.save(self.best_checkpoint_path)
+            #     self.no_improvement_epochs = 0
+            # else:
+            #     self.no_improvement_epochs += 1
 
             self.save(self.last_checkpoint_path)
             self.save_loss_log()
 
             # Early stopping
-            if self.no_improvement_epochs >= self.patience:
-                print(f"Early stopping at epoch {epoch + 1}")
-                break
+            # if self.no_improvement_epochs >= self.patience:
+            #     print(f"Early stopping at epoch {epoch + 1}")
+            #     break
 
-        accelerator.print("training complete")
+        accelerator.print("Training complete!")

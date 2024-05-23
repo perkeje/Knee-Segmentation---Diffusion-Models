@@ -1,0 +1,1 @@
+# Folder for storing checkpoints and figures

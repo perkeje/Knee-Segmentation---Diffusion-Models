@@ -8,6 +8,8 @@ from utils import default
 from utils import exists
 from torchvision.transforms import Normalize
 
+from utils.preprocessing import normalize_to_neg_one_to_one
+
 
 class NoSegmentatioStep(nn.Module):
     def __init__(self):
@@ -440,4 +442,6 @@ class Unet(nn.Module):
         # x = torch.cat((x, r), dim=1)
 
         x = self.final_res_block(x, t)
-        return self.final_conv(x)
+        x = self.final_conv(x)
+        x = F.softmax(x, dim=1)
+        return normalize_to_neg_one_to_one(x)

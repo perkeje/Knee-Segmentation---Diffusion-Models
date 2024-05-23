@@ -9,5 +9,10 @@ data/splitted/*
 
 exploration/*
 
+predict.py
+
+results/*
+!results/README.md
+
 **/.DS_Store
 **/__pycache__
