@@ -169,7 +169,9 @@ class Trainer:
         accelerator = self.accelerator
         device = accelerator.device
 
-        for epoch in range(self.step // self.ds.__len__(), self.epochs):
+        for epoch in range(
+            self.step // (self.ds.__len__() // self.batch_size), self.epochs
+        ):
             self.model.train()
             total_loss = 0.0
             num_batches = 0
