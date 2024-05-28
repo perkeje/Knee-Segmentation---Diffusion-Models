@@ -12,15 +12,16 @@ from unet.unet import Unet
 from utils.preprocessing import calculate_class_weights, compute_mean_std
 
 if __name__ == "__main__":
-    # mean, std = compute_mean_std("./data/splitted/train")
-    model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=0, norm_std=1)
+    mean, std = compute_mean_std("./data/splitted/train")
+    model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=mean, norm_std=std)
     image_size = 384
-    # class_weights = calculate_class_weights("./data/splitted/train")
+    class_weights = calculate_class_weights("./data/splitted/train")
+    print(class_weights)
     diffusion = GaussianDiffusion(
         model,
         image_size=image_size,
-        timesteps=1000,
-        # class_weights=class_weights,  # number of steps
+        timesteps=100,
+        class_weights=class_weights,  # number of steps
     )
 
     trainer = Trainer(
@@ -32,8 +33,8 @@ if __name__ == "__main__":
         train_batch_size=2,
         # val_images=50,
         train_lr=1e-4,
-        epochs=100,
-        ema_update_every=2,
+        epochs=300,
+        ema_update_every=10,
         ema_decay=0.995,
         adam_betas=(0.9, 0.99),
         save_and_sample_every=10,
