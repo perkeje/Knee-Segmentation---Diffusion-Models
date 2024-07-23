@@ -13,7 +13,7 @@ from utils.preprocessing import calculate_class_weights, compute_mean_std
 
 if __name__ == "__main__":
     # mean, std = compute_mean_std("./data/splitted/train")
-    model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=0, norm_std=1)
+    model = Unet(dim=16, dim_mults=(1, 2, 4, 8, 16, 32), norm_mean=0, norm_std=1)
     image_size = 384
     # class_weights = calculate_class_weights("./data/splitted/train")
     diffusion = GaussianDiffusion(

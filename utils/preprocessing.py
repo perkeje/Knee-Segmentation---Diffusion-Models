@@ -38,9 +38,9 @@ def compute_mean_std(adapt_dir, exts=["nii", "nii.gz"]):
     M2 = 0.0
     count = 0
 
-    print("Calculating dataset mean and std:")
+    print("Calculating dataset mean and std...")
     for path in tqdm(paths):
-        img = tio.ScalarImage(os.path.join(adapt_dir, path)).data.squeeze()
+        img = tio.ScalarImage(os.path.join(adapt_dir, path)).data.squeeze()[80, :, :]
         img = img.to(dtype=torch.double)
         img_mean = img.mean()
         img_M2 = img.var()
@@ -56,16 +56,16 @@ def compute_mean_std(adapt_dir, exts=["nii", "nii.gz"]):
     return mean, std
 
 
-def calculate_class_weights(adapt_dir, num_classes=6, exts=["nii", "nii.gz"]):
+def calculate_class_weights(device, adapt_dir, num_classes=6, exts=["nii", "nii.gz"]):
     paths = []
     for ext in exts:
         files = glob.glob(os.path.join(adapt_dir, "**", f"*.{ext}"), recursive=True)
         paths.extend([os.path.basename(p) for p in files])
-    class_counts = torch.zeros(num_classes)
+    class_counts = torch.zeros(num_classes).to(device)
 
     print("Calculating class weights...")
     for path in tqdm(paths):
-        seg = tio.LabelMap(os.path.join(adapt_dir, path)).data.squeeze()
+        seg = tio.LabelMap(os.path.join(adapt_dir, path)).data.squeeze().to(device)
         for i in range(num_classes):
             class_counts[i] += torch.sum(seg == i)
 

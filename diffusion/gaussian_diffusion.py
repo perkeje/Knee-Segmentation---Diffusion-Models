@@ -28,7 +28,7 @@ class GaussianDiffusion(nn.Module):
         timesteps=500,
         sampling_timesteps=None,
         objective="pred_x0",
-        beta_schedule="sigmoid",
+        beta_schedule="linear",
         schedule_fn_kwargs=dict(),
         ddim_sampling_eta=0.1,
         auto_normalize=True,
@@ -276,7 +276,13 @@ class GaussianDiffusion(nn.Module):
 
     @torch.no_grad()
     def p_sample_loop(
-        self, raw, shape, return_all_timesteps=False, cond_fn=None, guidance_kwargs=None
+        self,
+        raw,
+        shape,
+        return_all_timesteps=False,
+        cond_fn=None,
+        guidance_kwargs=None,
+        disble_bar=False,
     ):
         batch, device = shape[0], self.betas.device
 
@@ -289,12 +295,13 @@ class GaussianDiffusion(nn.Module):
             reversed(range(0, self.num_timesteps)),
             desc="Sampling loop time step",
             total=self.num_timesteps,
+            disable=disble_bar,
         ):
             self_cond = x_start if self.self_condition else None
             segmentation, x_start = self.p_sample(
                 segmentation, raw, t, self_cond, cond_fn, guidance_kwargs
             )
-            if return_all_timesteps and t % 100 == 0:
+            if return_all_timesteps and t % 10 == 0:
                 segmentations.append(segmentation)
 
         ret = (

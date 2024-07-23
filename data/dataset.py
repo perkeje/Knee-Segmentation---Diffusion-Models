@@ -68,12 +68,11 @@ class MriKneeDataset(data.Dataset):
 
         raw_img = tio.ScalarImage(os.path.join(self.raw_dir, self.paths[index]))
         mask_img = tio.LabelMap(os.path.join(self.masks_dir, self.paths[index]))
-        raw_img = raw_img.data.squeeze()[80, :, :]
-        raw_img = raw_img.unsqueeze(0).float()
+        raw_img = raw_img.data.squeeze()[80, :, :].to(dtype=torch.float32)
         mask = F.one_hot(
             mask_img.data.squeeze().to(dtype=torch.int64)[80, :, :],
             num_classes=6,
         )
-        mask = mask.permute(2, 0, 1).float()
+        mask = mask.permute(2, 0, 1).to(dtype=torch.float32)
 
         return raw_img, mask
