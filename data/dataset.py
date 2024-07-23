@@ -74,6 +74,6 @@ class MriKneeDataset(data.Dataset):
             mask_img.data.squeeze().to(dtype=torch.int64)[80, :, :],
             num_classes=6,
         )
-        mask = mask.permute(2, 0, 1).float()
+        mask = mask.permute(2, 0, 1).to(dtype=torch.float32)
 
         return raw_img, mask

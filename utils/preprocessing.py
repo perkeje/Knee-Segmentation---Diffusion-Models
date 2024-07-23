@@ -38,7 +38,7 @@ def compute_mean_std(adapt_dir, exts=["nii", "nii.gz"]):
     M2 = 0.0
     count = 0
 
-    print("Calculating dataset mean and std:")
+    print("Calculating dataset mean and std...")
     for path in tqdm(paths):
         img = tio.ScalarImage(os.path.join(adapt_dir, path)).data.squeeze()[80, :, :]
         img = img.to(dtype=torch.double).to('cuda')
@@ -56,7 +56,7 @@ def compute_mean_std(adapt_dir, exts=["nii", "nii.gz"]):
     return mean, std
 
 
-def calculate_class_weights(adapt_dir, num_classes=6, exts=["nii", "nii.gz"]):
+def calculate_class_weights(device, adapt_dir, num_classes=6, exts=["nii", "nii.gz"]):
     paths = []
     for ext in exts:
         files = glob.glob(os.path.join(adapt_dir, "**", f"*.{ext}"), recursive=True)
