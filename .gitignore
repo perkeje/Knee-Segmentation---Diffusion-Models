@@ -1,4 +1,5 @@
-knee_seg
+venv/
+**/venv
 
 data/*
 !data/*
@@ -11,8 +12,11 @@ exploration/*
 
 predict.py
 
-results/*
+results/checkpoints/*
+results/figures/*
 !results/README.md
 
 **/.DS_Store
 **/__pycache__
+
+.ruff_cache/*
