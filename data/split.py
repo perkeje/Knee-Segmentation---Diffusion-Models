@@ -1,8 +1,10 @@
 from sklearn.model_selection import train_test_split
 import os
 import shutil
-import argparse
 from tqdm import tqdm
+import typer
+
+app = typer.Typer()
 
 
 def split_data(raw_dirs, mask_dirs, save_dir, test_size=0.2):
@@ -25,9 +27,7 @@ def split_data(raw_dirs, mask_dirs, save_dir, test_size=0.2):
                 else:
                     print(file + " does not have a mask, skipping...")
 
-    train_files, test_files = train_test_split(
-        all_files, test_size=test_size, random_state=42
-    )
+    train_files, test_files = train_test_split(all_files, test_size=test_size, random_state=42)
 
     print(
         "Splitted "
@@ -47,58 +47,29 @@ def split_data(raw_dirs, mask_dirs, save_dir, test_size=0.2):
 
     print("Copying test files...")
     for test_file in tqdm(test_files):
-        shutil.copy(
-            test_file[0], os.path.join(test_dir, os.path.basename(test_file[0]))
-        )
-        shutil.copy(
-            test_file[1], os.path.join(test_masks_dir, os.path.basename(test_file[1]))
-        )
+        shutil.copy(test_file[0], os.path.join(test_dir, os.path.basename(test_file[0])))
+        shutil.copy(test_file[1], os.path.join(test_masks_dir, os.path.basename(test_file[1])))
 
     print("Copying train files...")
     for train_file in tqdm(train_files):
-        shutil.copy(
-            train_file[0], os.path.join(train_dir, os.path.basename(train_file[0]))
-        )
+        shutil.copy(train_file[0], os.path.join(train_dir, os.path.basename(train_file[0])))
         shutil.copy(
             train_file[1],
             os.path.join(train_masks_dir, os.path.basename(train_file[1])),
         )
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Split raw and mask data into training and testing sets."
-    )
-    parser.add_argument(
-        "--raw_dirs",
-        type=str,
-        nargs="+",
-        required=True,
-        help="List of directories containing raw images.",
-    )
-    parser.add_argument(
-        "--mask_dirs",
-        type=str,
-        nargs="+",
-        required=True,
-        help="List of directories containing mask images.",
-    )
-    parser.add_argument(
-        "--save_dir",
-        type=str,
-        required=True,
-        help="Directory where the split datasets should be saved.",
-    )
-    parser.add_argument(
-        "--test_size",
-        type=float,
-        default=0.2,
-        help="Proportion of the dataset to include in the test split (default: 0.2).",
-    )
-
-    return parser.parse_args()
+@app.command()
+def main(
+    raw_dirs: list[str] = typer.Option(..., help="List of directories containing raw images."),
+    mask_dirs: list[str] = typer.Option(..., help="List of directories containing mask images."),
+    save_dir: str = typer.Option(..., help="Directory where the split datasets should be saved."),
+    test_size: float = typer.Option(
+        0.2, help="Proportion of the dataset to include in the test split (default: 0.2)."
+    ),
+):
+    split_data(raw_dirs, mask_dirs, save_dir, test_size)
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    split_data(args.raw_dirs, args.mask_dirs, args.save_dir, args.test_size)
+    app()

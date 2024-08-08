@@ -27,9 +27,9 @@ class DynamicConditionalEncoding(nn.Module):
 
     def forward(self, image_features, segmentation_features):
 
-        norm_image_features = self.layer_norm(
-            image_features.permute(0, 2, 3, 1)
-        ).permute(0, 3, 1, 2)
+        norm_image_features = self.layer_norm(image_features.permute(0, 2, 3, 1)).permute(
+            0, 3, 1, 2
+        )
         norm_segmentation_features = self.layer_norm(
             segmentation_features.permute(0, 2, 3, 1)
         ).permute(0, 3, 1, 2)
@@ -130,25 +130,6 @@ class SinusoidalPosEmb(nn.Module):
         return emb
 
 
-class RandomOrLearnedSinusoidalPosEmb(nn.Module):
-    """following @crowsonkb 's lead with random (learned optional) sinusoidal pos emb"""
-
-    """ https://github.com/crowsonkb/v-diffusion-jax/blob/master/diffusion/models/danbooru_128.py#L8 """
-
-    def __init__(self, dim, is_random=False):
-        super().__init__()
-        assert (dim % 2) == 0
-        half_dim = dim // 2
-        self.weights = nn.Parameter(torch.randn(half_dim), requires_grad=not is_random)
-
-    def forward(self, x):
-        x = rearrange(x, "b -> b 1")
-        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
-        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
-        fouriered = torch.cat((x, fouriered), dim=-1)
-        return fouriered
-
-
 # building block modules
 
 
@@ -210,11 +191,9 @@ class LinearAttention(nn.Module):
         self.to_out = nn.Sequential(nn.Conv2d(hidden_dim, dim, 1), RMSNorm(dim))
 
     def forward(self, x):
-        b, c, h, w = x.shape
+        _, _, h, w = x.shape
         qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(
-            lambda t: rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads), qkv
-        )
+        q, k, v = map(lambda t: rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads), qkv)
 
         q = q.softmax(dim=-2)
         k = k.softmax(dim=-1)
@@ -239,11 +218,9 @@ class Attention(nn.Module):
         self.to_out = nn.Conv2d(hidden_dim, dim, 1)
 
     def forward(self, x):
-        b, c, h, w = x.shape
+        _, _, h, w = x.shape
         qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(
-            lambda t: rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads), qkv
-        )
+        q, k, v = map(lambda t: rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads), qkv)
 
         q = q * self.scale
 
@@ -266,20 +243,14 @@ class Unet(nn.Module):
         out_dim=None,
         dim_mults=(1, 2, 4, 8),
         channels=6,
-        self_condition=False,
-        learned_variance=False,
-        learned_sinusoidal_cond=False,
-        random_fourier_features=False,
-        learned_sinusoidal_dim=16,
     ):
         super().__init__()
 
         # determine dimensions
         self.channels = channels
-        self.self_condition = self_condition
         self.mean = norm_mean
         self.std = norm_std
-        input_channels = channels * (2 if self_condition else 1)
+        input_channels = channels * 2
 
         init_dim = default(init_dim, dim)
         self.init_conv_segmentation = nn.Conv2d(input_channels, init_dim, 7, padding=3)
@@ -292,18 +263,8 @@ class Unet(nn.Module):
 
         time_dim = dim * 4
 
-        self.random_or_learned_sinusoidal_cond = (
-            learned_sinusoidal_cond or random_fourier_features
-        )
-
-        if self.random_or_learned_sinusoidal_cond:
-            sinu_pos_emb = RandomOrLearnedSinusoidalPosEmb(
-                learned_sinusoidal_dim, random_fourier_features
-            )
-            fourier_dim = learned_sinusoidal_dim + 1
-        else:
-            sinu_pos_emb = SinusoidalPosEmb(dim)
-            fourier_dim = dim
+        sinu_pos_emb = SinusoidalPosEmb(dim)
+        fourier_dim = dim
 
         self.time_mlp = nn.Sequential(
             sinu_pos_emb,
@@ -372,9 +333,7 @@ class Unet(nn.Module):
             self.ups.append(
                 nn.ModuleList(
                     [
-                        ResnetBlock(
-                            dim_out + dim_in, dim_out + dim_in, time_emb_dim=time_dim
-                        ),
+                        ResnetBlock(dim_out + dim_in, dim_out + dim_in, time_emb_dim=time_dim),
                         ResnetBlock(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         Residual(PreNorm(dim_out, LinearAttention(dim_out))),
                         (
@@ -386,14 +345,13 @@ class Unet(nn.Module):
                 )
             )
 
-        default_out_dim = channels * (1 if not learned_variance else 2)
+        default_out_dim = channels
         self.out_dim = default(out_dim, default_out_dim)
 
         self.final_res_block = ResnetBlock(dim, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
     def forward(self, segmentation, raw, time):
-
         y = Normalize(self.mean, self.std)(raw)
 
         x = self.init_conv_segmentation(segmentation)

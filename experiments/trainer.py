@@ -1,19 +1,17 @@
-import os
 import json
 import torch
 from torch.utils.data import DataLoader, random_split
 from torch.optim import Adam
-from torch.optim.lr_scheduler import StepLR
-from torch.cuda.amp import GradScaler, autocast
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision import utils
 from tqdm.auto import tqdm
 from accelerate import Accelerator
 from pathlib import Path
 from data import MriKneeDataset
-from utils import cycle
-from ema_pytorch import EMA
 import math
 from utils.postprocessing import apply_argmax_and_coloring
+from sklearn.metrics import jaccard_score, f1_score
+from accelerate.utils import set_seed
 
 
 class Trainer:
@@ -25,79 +23,77 @@ class Trainer:
         test_segmentations_folder,
         test_images_folder,
         *,
-        train_batch_size=16,
-        # val_images=20,
-        train_lr=1e-4,
+        batch_size=16,
+        val_size=0.4,
+        val_metric_size=4,
+        lr=1e-4,
         epochs=500,
-        ema_update_every=2,
-        ema_decay=0.995,
         adam_betas=(0.9, 0.99),
         save_and_sample_every=20,
+        es_patience=10,
+        lr_patience=5,
         results_folder="./results",
-        amp=True,
-        # patience=10,
-        # reduce_lr_patience=5,
         checkpoint_folder="./results/checkpoints",
-        # best_checkpoint="best_checkpoint.pt",
-        last_checkpoint="last_checkpoint.pt",
-        loss_log="loss_log.json",
+        best_checkpoint="best_checkpoint",
+        last_checkpoint="last_checkpoint",
+        log="log.json",
     ):
         super().__init__()
+        set_seed(42)
 
-        self.accelerator = Accelerator(mixed_precision="fp16" if amp else "no")
-
-        self.model = diffusion_model.to(self.accelerator.device)
-        self.model = self.accelerator.prepare(self.model)
+        self.accelerator = Accelerator()
 
         self.save_and_sample_every = save_and_sample_every
-
-        self.batch_size = train_batch_size
-
+        self.batch_size = batch_size
         self.epochs = epochs
-        self.train_lr = train_lr
+        self.lr = lr * self.accelerator.num_processes
         self.image_size = diffusion_model.image_size
+        self.val_metric_size = val_metric_size
 
         # dataset and dataloader
-        self.ds = MriKneeDataset(
+        self.train_ds = MriKneeDataset(
             train_images_folder,
             train_segmentations_folder,
         )
 
-        self.test_ds = MriKneeDataset(
+        test_ds = MriKneeDataset(
             test_images_folder,
             test_segmentations_folder,
         )
-        # self.val_ds, self.test_ds = random_split(
-        #     self.test_ds, [val_images, len(self.test_ds) - val_images]
-        # )
-        # print(
-        #     "Training size: "
-        #     + str(len(self.ds))
-        #     + "\nValidation size: "
-        #     + str(len(self.val_ds))
-        # )
+        self.val_ds, self.test_ds = random_split(
+            test_ds, [val_size, 1 - val_size], torch.Generator()
+        )
+        self.accelerator.print(
+            "Training size: "
+            + str(len(self.train_ds))
+            + "\nValidation size: "
+            + str(len(self.val_ds))
+        )
         self.train_dl = DataLoader(
-            self.ds,
-            batch_size=train_batch_size,
-            shuffle=True,
+            self.train_ds,
+            batch_size=self.batch_size,
+            shuffle=False,
             pin_memory=True,
-            num_workers=4,
+            num_workers=4 * self.accelerator.num_processes,
         )
 
-        # self.val_dl = DataLoader(
-        #     self.val_ds,
-        #     batch_size=train_batch_size,
-        #     shuffle=True,
-        #     pin_memory=True,
-        #     num_workers=4,
-        # )
+        self.val_dl = DataLoader(
+            self.val_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            pin_memory=True,
+            num_workers=4 * self.accelerator.num_processes,
+        )
 
-        self.train_dl = self.accelerator.prepare(self.train_dl)
-        # self.val_dl = self.accelerator.prepare(self.val_dl)
-
+        self.val_metric_dl = DataLoader(
+            self.test_ds,
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=True,
+            num_workers=4 * self.accelerator.num_processes,
+        )
         # optimizer
-        self.opt = Adam(diffusion_model.parameters(), lr=train_lr, betas=adam_betas)
-        self.scaler = GradScaler()
+        self.optimizer = Adam(diffusion_model.parameters(), lr=self.lr, betas=adam_betas)
 
         # for logging results in a folder periodically
         self.results_folder = Path(results_folder)
@@ -107,156 +103,198 @@ class Trainer:
         self.checkpoint_folder = Path(checkpoint_folder)
         self.checkpoint_folder.mkdir(exist_ok=True)
 
-        # self.best_checkpoint_path = self.checkpoint_folder / best_checkpoint
+        self.best_checkpoint_path = self.checkpoint_folder / best_checkpoint
         self.last_checkpoint_path = self.checkpoint_folder / last_checkpoint
-        self.loss_log_path = self.checkpoint_folder / loss_log
+        self.log_path = self.checkpoint_folder / log
 
         # step counter state
         self.step = 0
 
-        # EMA
-        self.ema = EMA(diffusion_model, beta=ema_decay, update_every=ema_update_every)
-
         # Scheduler and early stopping
-        self.scheduler = StepLR(self.opt, step_size=25, gamma=0.5)
-        # self.patience = patience
-        # self.best_loss = float("inf")
-        # self.no_improvement_epochs = 0
+        self.scheduler = ReduceLROnPlateau(self.optimizer, "min", patience=lr_patience)
+        self.es_patience = es_patience
+        self.best_metric = 0
+        self.no_improvement_epochs = 0
+
+        (
+            self.model,
+            self.optimizer,
+            self.scheduler,
+            self.train_dl,
+            self.val_dl,
+            self.val_metric_dl,
+        ) = self.accelerator.prepare(
+            diffusion_model,
+            self.optimizer,
+            self.scheduler,
+            self.train_dl,
+            self.val_dl,
+            self.val_metric_dl,
+        )
 
         # Loss log
-        self.loss_log = []
+        self.logs = []
 
         # Resume training if last checkpoint exists
         if self.last_checkpoint_path.exists():
-            self.load(self.last_checkpoint_path)
+            self.accelerator.load_state(self.last_checkpoint_path)
 
-    def save(self, path):
+        if self.log_path.exists():
+            self.load_log()
+            self.best_metric = self.logs[-1]["best_metric"]
+            self.step = self.logs[-1]["step"]
+
+    def append_to_log(self, step, loss, val_loss, metric, best_metric):
         if not self.accelerator.is_local_main_process:
             return
+        self.logs.append(
+            {
+                "step": step,
+                "loss": loss,
+                "val_loss": val_loss,
+                "metric": metric,
+                "best_metric": best_metric,
+            }
+        )
+        with open(self.log_path, "w") as f:
+            json.dump(self.logs, f, indent=4)
 
-        data = {
-            "step": self.step,
-            "model": self.accelerator.get_state_dict(self.model),
-            "opt": self.opt.state_dict(),
-            "ema": self.ema.state_dict(),
-            "scaler": self.scaler.state_dict(),
-            # "best_loss": self.best_loss,
-            "loss_log": self.loss_log,
-        }
-        torch.save(data, str(path))
-
-    def load(self, path):
-        accelerator = self.accelerator
-        device = accelerator.device
-
-        data = torch.load(str(path), map_location=device)
-
-        model = self.accelerator.unwrap_model(self.model)
-        model.load_state_dict(data["model"])
-
-        self.step = data["step"]
-        self.opt.load_state_dict(data["opt"])
-        self.ema.load_state_dict(data["ema"])
-        self.scaler.load_state_dict(data["scaler"])
-        # self.best_loss = data["best_loss"]
-        self.loss_log = data["loss_log"]
-
-    def save_loss_log(self):
-        with open(self.loss_log_path, "w") as f:
-            json.dump(self.loss_log, f)
+    def load_log(self):
+        with open(self.log_path, "r") as f:
+            self.logs = json.load(f)
 
     def train(self):
-        accelerator = self.accelerator
-        device = accelerator.device
 
         for epoch in range(
-            self.step // (math.ceil(self.ds.__len__() // self.batch_size)), self.epochs
+            self.step // (math.ceil(len(self.train_dl) // self.batch_size)), self.epochs
         ):
             self.model.train()
-            total_loss = 0.0
-            num_batches = 0
 
             with tqdm(
-                total=len(self.ds),
+                total=len(self.train_dl),
                 desc=f"Epoch {epoch + 1}/{self.epochs}",
-                disable=not accelerator.is_main_process,
-            ) as epoch_pbar:
+                colour="green",
+                disable=not self.accelerator.is_main_process,
+            ) as train_bar:
                 for data in self.train_dl:
-                    segmentation = data[1].to(device)
-                    raw = data[0].to(device)
-                    with accelerator.autocast():
+                    segmentation = data[1]
+                    raw = data[0]
+                    with self.accelerator.autocast():
                         loss = self.model(segmentation, raw)
-                        total_loss += loss.item()
 
                     self.accelerator.backward(loss)
-
-                    accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
-                    self.opt.step()
-                    self.opt.zero_grad()
+                    self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
                     self.step += 1
-                    num_batches += 1
-                    epoch_pbar.update(self.batch_size)
-                    train_loss = total_loss / num_batches
-                    epoch_pbar.set_postfix(
-                        train_loss=train_loss, lr=self.scheduler.get_last_lr()
+                    train_bar.update(1)
+                    train_bar.set_postfix(
+                        train_loss=loss.item(),
+                        lr=self.scheduler.get_last_lr() / 4,
+                        gpu_lr=self.scheduler.get_last_lr(),
                     )
+                train_bar.close()
+                self.accelerator.wait_for_everyone()
 
                 # Validation
-                # self.model.eval()
-                # val_loss = 0.0
-                # print("Validating...")
-                # with torch.no_grad():
-                #     for data in tqdm(self.val_dl):
-                #         segmentation = data[1].to(device)
-                #         raw = data[0].to(device)
-                #         with accelerator.autocast():
-                #             loss = self.model(segmentation, raw)
-                #         val_loss += loss.item()
-                # val_loss /= len(self.val_dl)
-                self.scheduler.step()
-                # print(val_loss)
+                self.model.eval()
+                val_loss = []
+                f1_list = []
+                iou_list = []
+                with torch.no_grad():
+                    with tqdm(
+                        total=len(self.val_dl)
+                        + self.val_metric_size
+                        * 160
+                        // self.batch_size
+                        // self.accelerator.num_processes,
+                        desc="/tValidation",
+                        colour="blue",
+                        disable=not self.accelerator.is_main_process,
+                    ) as val_bar:
+                        for data in self.val_dl:
+                            segmentation = data[1]
+                            raw = data[0]
+                            with self.accelerator.autocast():
+                                val_loss.append(self.model(segmentation, raw).item())
+                            val_bar.update(1)
 
-            self.loss_log.append({"epoch": epoch + 1, "train_loss": train_loss})
+                        for i, data in enumerate(self.val_metric_dl):
+                            segmentation = data[1]
+                            raw = data[0]
+                            with self.accelerator.autocast():
+                                sampled = self.model.sample(
+                                    raw=raw, batch_size=self.batch_size, disable_bar=True
+                                )
+                            pred_mask_flat = torch.argmax(sampled, dim=1).flatten()
+                            true_mask_flat = torch.argmax(segmentation, dim=1).flatten()
 
-            # print("Val loss: " + str(val_loss))
+                            f1 = f1_score(true_mask_flat, pred_mask_flat, average="micro")
+                            iou = jaccard_score(
+                                true_mask_flat,
+                                pred_mask_flat,
+                                average="micro",
+                            )
+                            f1_list.append(f1)
+                            iou_list.append(iou)
+                            val_bar.update(1)
+                            if (
+                                i
+                                == self.val_metric_size
+                                * 160
+                                // self.batch_size
+                                // self.accelerator.num_processes
+                            ):
+                                break
 
-            # Save checkpoints
-            if (epoch + 1) % self.save_and_sample_every == 0:
-                self.ema.update()
-                self.ema.ema_model.eval()
+                self.accelerator.wait_for_everyone()
+                val_loss = torch.tensor(val_loss)
+                f1_list = torch.tensor(f1_list)
+                iou_list = torch.tensor(iou_list)
+
+                val_loss = self.accelerator.gather(val_loss)
+                f1 = self.accelerator.gather(f1_list)
+                iou = self.accelerator.gather(iou_list)
+
+                if self.accelerator.is_main_process:
+                    val_loss = val_loss.mean().item()
+                    f1 = f1.mean().item()
+                    iou = iou.mean().item()
+                    train_bar.set_postfix(val_loss=val_loss, f1=f1, iou=iou),
+                    metric = f1 + iou
+                    if metric > self.best_metric:
+                        self.best_metric = metric
+                        self.accelerator.save_state(self.best_checkpoint_path)
+                        self.no_improvement_epochs = 0
+                    else:
+                        self.no_improvement_epochs += 1
+
+                    self.append_to_log(self.step, loss.item(), val_loss, metric, self.best_metric)
+                    self.accelerator.save_state(self.last_checkpoint_path)
+
+                self.scheduler.step(metric)
+
+            # Save and sample
+            if self.accelerator.is_main_process and (epoch + 1) % self.save_and_sample_every == 0:
 
                 with torch.no_grad():
                     milestone = (epoch + 1) // self.save_and_sample_every
-                    validation_sample = self.test_ds[
-                        0
-                    ]  # Assuming the first validation sample is used
-                    raw = validation_sample[0].unsqueeze(0).to(device)
-                    sampled_images = self.ema.ema_model.sample(raw=raw, batch_size=1)
+                    validation_sample = self.val_ds[0]
+                    raw = validation_sample[0].unsqueeze(0)
+                    with self.accelerator.autocast():
+                        sampled_images = self.model.sample(raw=raw, batch_size=1)
 
                     # Apply argmax and coloring
-                    colored_sampled_images = (
-                        apply_argmax_and_coloring(sampled_images) / 255.0
-                    )
+                    colored_sampled_images = apply_argmax_and_coloring(sampled_images) / 255.0
 
                     utils.save_image(
                         colored_sampled_images,
                         str(self.results_folder / f"sample-{milestone}.png"),
                     )
 
-            # Save best and last checkpoints
-            # if val_loss < self.best_loss:
-            #     self.best_loss = val_loss
-            #     self.save(self.best_checkpoint_path)
-            #     self.no_improvement_epochs = 0
-            # else:
-            #     self.no_improvement_epochs += 1
-
-            self.save(self.last_checkpoint_path)
-            self.save_loss_log()
-
             # Early stopping
-            # if self.no_improvement_epochs >= self.patience:
-            #     print(f"Early stopping at epoch {epoch + 1}")
-            #     break
+            if self.accelerator.is_main_process and self.no_improvement_epochs >= self.es_patience:
+                print(f"Early stopping at epoch {epoch + 1}")
+                break
 
-        accelerator.print("Training complete!")
+        self.accelerator.print("Training complete!")

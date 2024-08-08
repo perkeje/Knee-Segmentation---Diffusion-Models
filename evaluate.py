@@ -6,24 +6,14 @@ from tqdm.auto import tqdm
 from sklearn.metrics import jaccard_score
 from diffusion.gaussian_diffusion import GaussianDiffusion
 from unet.unet import Unet
-from utils.preprocessing import compute_mean_std
 from data import MriKneeDataset
 from accelerate import Accelerator
-
-
-def dice_coefficient(pred, target):
-    smooth = 1e-8
-    pred = pred.float()
-    target = target.float()
-    intersection = (pred * target).sum()
-    return (2.0 * intersection + smooth) / (pred.sum() + target.sum() + smooth)
+from sklearn.metrics import f1_score
 
 
 if __name__ == "__main__":
     # Initialize model with pre-computed mean and std
-    model = Unet(
-        dim=16, dim_mults=(1, 2, 4, 8, 16), norm_mean=73.6998, norm_std=52.7535
-    )
+    model = Unet(dim=16, dim_mults=(1, 2, 4, 8, 16), norm_mean=73.6998, norm_std=52.7535)
     image_size = 384
 
     diffusion = GaussianDiffusion(
@@ -52,9 +42,7 @@ if __name__ == "__main__":
         "./data/splitted/test",
         "./data/splitted/test_masks",
     )
-    test_dataloader = DataLoader(
-        test_dataset, batch_size=1, shuffle=False, num_workers=4
-    )
+    test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4)
 
     test_dataloader = accelerator.prepare(test_dataloader)
 
@@ -64,7 +52,7 @@ if __name__ == "__main__":
     num_samples = 0
 
     with torch.no_grad():
-        for data in tqdm(test_dataloader, desc="Evaluating"):
+        for data in tqdm(test_dataloader, desc="Evaluating:"):
             raw = data[0].to(accelerator.device).unsqueeze(0)  # Add batch dimension
             true_mask = data[1].to(accelerator.device)
 
@@ -72,28 +60,17 @@ if __name__ == "__main__":
             pred_mask = model.sample(raw=raw, batch_size=1)
 
             # Convert pred_mask to one-hot encoded format
-            pred_mask = torch.argmax(pred_mask, dim=1, keepdim=True)
-            pred_mask = torch.nn.functional.one_hot(
-                pred_mask, num_classes=true_mask.shape[1]
-            )
-            pred_mask = (
-                pred_mask.permute(0, 4, 1, 2, 3).squeeze(0).squeeze(1)
-            )  # Convert to (C, H, W)
+            pred_mask_flat = torch.argmax(pred_mask, dim=1).flatten()
+            true_mask_flat = torch.argmax(true_mask, dim=1).flatten()
 
-            # Flatten the masks for metric calculation
-            pred_mask_flat = pred_mask.cpu().numpy().ravel()
-            true_mask_flat = true_mask.cpu().numpy().ravel()
-
-            dice = dice_coefficient(
-                torch.tensor(pred_mask_flat), torch.tensor(true_mask_flat)
-            )
+            dice = f1_score(true_mask_flat, pred_mask_flat, average="micro")
             jaccard = jaccard_score(
                 true_mask_flat,
                 pred_mask_flat,
-                average="macro",  # Using macro average for multiclass
+                average="micro",
             )
 
-            total_dice += dice.item()
+            total_dice += dice
             total_jaccard += jaccard
             num_samples += 1
 

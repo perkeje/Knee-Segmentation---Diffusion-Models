@@ -4,7 +4,6 @@ from tqdm import tqdm
 import glob
 import torch
 import torchio as tio
-import os
 
 
 def load_mri(path):
@@ -40,8 +39,8 @@ def compute_mean_std(adapt_dir, exts=["nii", "nii.gz"]):
 
     print("Calculating dataset mean and std...")
     for path in tqdm(paths):
-        img = tio.ScalarImage(os.path.join(adapt_dir, path)).data.squeeze()[80, :, :]
-        img = img.to(dtype=torch.double).to('cuda')
+        img = tio.ScalarImage(os.path.join(adapt_dir, path)).data.squeeze()
+        img = img.to(dtype=torch.double)
         img_mean = img.mean()
         img_M2 = img.var()
         delta = img_mean - mean
@@ -61,11 +60,11 @@ def calculate_class_weights(device, adapt_dir, num_classes=6, exts=["nii", "nii.
     for ext in exts:
         files = glob.glob(os.path.join(adapt_dir, "**", f"*.{ext}"), recursive=True)
         paths.extend([os.path.basename(p) for p in files])
-    class_counts = torch.zeros(num_classes).to('cuda')
+    class_counts = torch.zeros(num_classes)
 
     print("Calculating class weights...")
     for path in tqdm(paths):
-        seg = tio.LabelMap(os.path.join(adapt_dir, path)).data.squeeze()[80, :, :].to('cuda')
+        seg = tio.LabelMap(os.path.join(adapt_dir, path)).data.squeeze()
         for i in range(num_classes):
             class_counts[i] += torch.sum(seg == i)
 

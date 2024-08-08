@@ -38,42 +38,27 @@ class MriKneeDataset(data.Dataset):
         )
 
     def __len__(self):
-        # return len(self.paths) * 160
-        return len(self.paths)
+        return len(self.paths) * 160
 
     def __getitem__(self, index):
-        # file_index = index // 160
-        # slice_index = index % 160
-        # path = self.paths[file_index]
-        # if not path.__eq__(self.latest_name):
-        #     self.latest_name = path
-        #     self.latest_subject = tio.Subject(
-        #         raw_img=tio.ScalarImage(os.path.join(self.raw_dir, self.latest_name)),
-        #         mask_img=tio.LabelMap(os.path.join(self.masks_dir, self.latest_name)),
-        #     )
-        #     if self.transform:
-        #         self.latest_subject = self.transformations(self.latest_subject)
+        file_index = index // 160
+        slice_index = index % 160
+        path = self.paths[file_index]
+        if not path.__eq__(self.latest_name):
+            self.latest_name = path
+            self.latest_subject = tio.Subject(
+                raw_img=tio.ScalarImage(os.path.join(self.raw_dir, self.latest_name)),
+                mask_img=tio.LabelMap(os.path.join(self.masks_dir, self.latest_name)),
+            )
+            if self.transform:
+                self.latest_subject = self.transformations(self.latest_subject)
 
-        # raw_img = self.latest_subject.raw_img.data.squeeze()[slice_index, :, :]
-        # raw_img = raw_img.unsqueeze(0).float()
-        # mask = F.one_hot(
-        #     self.latest_subject.mask_img.data.squeeze().to(dtype=torch.int64)[
-        #         slice_index, :, :
-        #     ],
-        #     num_classes=6,
-        # )
-        # mask = mask.permute(2, 0, 1).float()
-
-        # return raw_img, mask, slice_index
-
-        raw_img = tio.ScalarImage(os.path.join(self.raw_dir, self.paths[index]))
-        mask_img = tio.LabelMap(os.path.join(self.masks_dir, self.paths[index]))
-        raw_img = raw_img.data.squeeze()[80, :, :]
-        raw_img = raw_img.unsqueeze(0).to(dtype=torch.float32)
+        raw_img = self.latest_subject.raw_img.data.squeeze()[slice_index, :, :]
+        raw_img = raw_img.unsqueeze(0).float()
         mask = F.one_hot(
-            mask_img.data.squeeze().to(dtype=torch.int64)[80, :, :],
+            self.latest_subject.mask_img.data.squeeze().to(dtype=torch.int64)[slice_index, :, :],
             num_classes=6,
         )
-        mask = mask.permute(2, 0, 1).to(dtype=torch.float32)
+        mask = mask.permute(2, 0, 1).float()
 
-        return raw_img, mask
+        return raw_img, mask, slice_index

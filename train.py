@@ -1,7 +1,6 @@
 import sys
 import os
 
-import torch
 
 # Add the root directory of the project to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -13,15 +12,18 @@ from utils.preprocessing import calculate_class_weights, compute_mean_std
 
 if __name__ == "__main__":
     mean, std = compute_mean_std("./data/splitted/train")
+    print("Mean and std:")
+    print(mean, std)
     model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=mean, norm_std=std)
     image_size = 384
     class_weights = calculate_class_weights("./data/splitted/train")
+    print("Class weights:")
     print(class_weights)
     diffusion = GaussianDiffusion(
         model,
         image_size=image_size,
         timesteps=100,
-        class_weights=class_weights,  # number of steps
+        class_weights=class_weights,
     )
 
     trainer = Trainer(
