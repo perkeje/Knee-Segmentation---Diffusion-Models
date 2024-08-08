@@ -28,11 +28,11 @@ class GaussianDiffusion(nn.Module):
         timesteps=500,
         objective="pred_x0",
         beta_schedule="linear",
-        schedule_fn_kwargs=dict(),
+        schedule_fn_kwargs={},
         auto_normalize=True,
     ):
         super().__init__()
-        assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim)
+        assert not (type(self) is GaussianDiffusion and model.channels != model.out_dim)
         assert not model.random_or_learned_sinusoidal_cond
         self.model = model
         self.channels = self.model.channels
@@ -67,7 +67,8 @@ class GaussianDiffusion(nn.Module):
 
         # helper function to register buffer from float64 to float32
 
-        register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
+        def register_buffer(name, val):
+            self.register_buffer(name, val.to(torch.float32))
 
         register_buffer("betas", betas)
         register_buffer("alphas_cumprod", alphas_cumprod)

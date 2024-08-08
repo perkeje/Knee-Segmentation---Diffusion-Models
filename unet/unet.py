@@ -193,7 +193,7 @@ class LinearAttention(nn.Module):
     def forward(self, x):
         _, _, h, w = x.shape
         qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(lambda t: rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads), qkv)
+        q, k, v = (rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads) for t in qkv)
 
         q = q.softmax(dim=-2)
         k = k.softmax(dim=-1)
@@ -220,7 +220,7 @@ class Attention(nn.Module):
     def forward(self, x):
         _, _, h, w = x.shape
         qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(lambda t: rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads), qkv)
+        q, k, v = (rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads) for t in qkv)
 
         q = q * self.scale
 
@@ -256,7 +256,7 @@ class Unet(nn.Module):
         self.init_conv_segmentation = nn.Conv2d(input_channels, init_dim, 7, padding=3)
         self.init_conv_raw = nn.Conv2d(1, init_dim, 7, padding=3)
 
-        dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
+        dims = [init_dim, *(dim * m for m in dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
         # time embeddings

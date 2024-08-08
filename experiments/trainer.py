@@ -23,7 +23,7 @@ class Trainer:
         test_segmentations_folder,
         test_images_folder,
         *,
-        batch_size=16,
+        batch_size=4,
         val_size=0.4,
         val_metric_size=4,
         lr=1e-4,
