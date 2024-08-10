@@ -49,13 +49,11 @@ def compute_mean_std(adapt_dir, exts=["nii", "nii.gz"]):
         count += 1
 
     std = (M2 / count) ** 0.5
-    print("MEAN: " + str(mean))
-    print("STD: " + str(std))
 
     return mean, std
 
 
-def calculate_class_weights(device, adapt_dir, num_classes=6, exts=["nii", "nii.gz"]):
+def calculate_class_weights(adapt_dir, num_classes=6, exts=["nii", "nii.gz"]):
     paths = []
     for ext in exts:
         files = glob.glob(os.path.join(adapt_dir, "**", f"*.{ext}"), recursive=True)

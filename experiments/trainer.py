@@ -1,6 +1,7 @@
 import json
+from random import randint
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision import utils
@@ -8,7 +9,6 @@ from tqdm.auto import tqdm
 from accelerate import Accelerator
 from pathlib import Path
 from data import MriKneeDataset
-import math
 from utils.postprocessing import apply_argmax_and_coloring
 from sklearn.metrics import jaccard_score, f1_score
 from accelerate.utils import set_seed
@@ -27,7 +27,7 @@ class Trainer:
         val_size=0.4,
         val_metric_size=4,
         lr=1e-4,
-        epochs=500,
+        epochs=250,
         adam_betas=(0.9, 0.99),
         save_and_sample_every=20,
         es_patience=10,
@@ -60,8 +60,9 @@ class Trainer:
             test_images_folder,
             test_segmentations_folder,
         )
+        generator = torch.Generator().manual_seed(42)
         self.val_ds, self.test_ds = random_split(
-            test_ds, [val_size, 1 - val_size], torch.Generator()
+            test_ds, [val_size, 1 - val_size], generator=generator
         )
         self.accelerator.print(
             "Training size: "
@@ -84,9 +85,14 @@ class Trainer:
             pin_memory=True,
             num_workers=4 * self.accelerator.num_processes,
         )
-
+        val_metric_index = randint(0, len(self.test_ds) // 160) * 160
+        subset_indices = [
+            (val_metric_index + i) % len(self.test_ds) for i in range(self.val_metric_size * 160)
+        ]
+        val_metric_ds = Subset(self.test_ds, subset_indices)
+        print(len(val_metric_ds))
         self.val_metric_dl = DataLoader(
-            self.test_ds,
+            val_metric_ds,
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=True,
@@ -111,7 +117,7 @@ class Trainer:
         self.step = 0
 
         # Scheduler and early stopping
-        self.scheduler = ReduceLROnPlateau(self.optimizer, "min", patience=lr_patience)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, "max", patience=lr_patience)
         self.es_patience = es_patience
         self.best_metric = 0
         self.no_improvement_epochs = 0
@@ -164,11 +170,9 @@ class Trainer:
             self.logs = json.load(f)
 
     def train(self):
-
-        for epoch in range(
-            self.step // (math.ceil(len(self.train_dl) // self.batch_size)), self.epochs
-        ):
+        for epoch in range(self.step, self.epochs):
             self.model.train()
+            print("\n")
 
             with tqdm(
                 total=len(self.train_dl),
@@ -177,6 +181,7 @@ class Trainer:
                 disable=not self.accelerator.is_main_process,
             ) as train_bar:
                 for data in self.train_dl:
+                    self.optimizer.zero_grad()
                     segmentation = data[1]
                     raw = data[0]
                     with self.accelerator.autocast():
@@ -185,12 +190,10 @@ class Trainer:
                     self.accelerator.backward(loss)
                     self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
-                    self.optimizer.zero_grad()
-                    self.step += 1
                     train_bar.update(1)
                     train_bar.set_postfix(
                         train_loss=loss.item(),
-                        lr=self.scheduler.get_last_lr() / 4,
+                        lr=self.scheduler.get_last_lr() / self.accelerator.num_processes,
                         gpu_lr=self.scheduler.get_last_lr(),
                     )
                 train_bar.close()
@@ -208,7 +211,7 @@ class Trainer:
                         * 160
                         // self.batch_size
                         // self.accelerator.num_processes,
-                        desc="/tValidation",
+                        desc=f"/tValidating epoch {epoch + 1}",
                         colour="blue",
                         disable=not self.accelerator.is_main_process,
                     ) as val_bar:
@@ -219,7 +222,7 @@ class Trainer:
                                 val_loss.append(self.model(segmentation, raw).item())
                             val_bar.update(1)
 
-                        for i, data in enumerate(self.val_metric_dl):
+                        for data in self.val_metric_dl:
                             segmentation = data[1]
                             raw = data[0]
                             with self.accelerator.autocast():
@@ -238,41 +241,37 @@ class Trainer:
                             f1_list.append(f1)
                             iou_list.append(iou)
                             val_bar.update(1)
-                            if (
-                                i
-                                == self.val_metric_size
-                                * 160
-                                // self.batch_size
-                                // self.accelerator.num_processes
-                            ):
-                                break
 
-                self.accelerator.wait_for_everyone()
-                val_loss = torch.tensor(val_loss)
-                f1_list = torch.tensor(f1_list)
-                iou_list = torch.tensor(iou_list)
+                    self.accelerator.wait_for_everyone()
+                    val_loss = torch.tensor(val_loss)
+                    f1_list = torch.tensor(f1_list)
+                    iou_list = torch.tensor(iou_list)
 
-                val_loss = self.accelerator.gather(val_loss)
-                f1 = self.accelerator.gather(f1_list)
-                iou = self.accelerator.gather(iou_list)
+                    val_loss = self.accelerator.gather(val_loss)
+                    f1 = self.accelerator.gather(f1_list)
+                    iou = self.accelerator.gather(iou_list)
 
-                if self.accelerator.is_main_process:
-                    val_loss = val_loss.mean().item()
-                    f1 = f1.mean().item()
-                    iou = iou.mean().item()
-                    train_bar.set_postfix(val_loss=val_loss, f1=f1, iou=iou),
-                    metric = f1 + iou
-                    if metric > self.best_metric:
-                        self.best_metric = metric
-                        self.accelerator.save_state(self.best_checkpoint_path)
-                        self.no_improvement_epochs = 0
-                    else:
-                        self.no_improvement_epochs += 1
+                    if self.accelerator.is_main_process:
+                        val_loss = val_loss.mean().item()
+                        f1 = f1.mean().item()
+                        iou = iou.mean().item()
+                        val_bar.close()
+                        metric = f1 + iou
+                        val_bar.set_postfix(val_loss=val_loss, f1=f1, iou=iou, metric=metric)
+                        if metric > self.best_metric:
+                            self.best_metric = metric
+                            self.accelerator.save_state(self.best_checkpoint_path)
+                            self.no_improvement_epochs = 0
+                        else:
+                            self.no_improvement_epochs += 1
 
-                    self.append_to_log(self.step, loss.item(), val_loss, metric, self.best_metric)
-                    self.accelerator.save_state(self.last_checkpoint_path)
+                        self.append_to_log(
+                            self.step, loss.item(), val_loss, metric, self.best_metric
+                        )
+                        self.accelerator.save_state(self.last_checkpoint_path)
 
-                self.scheduler.step(metric)
+                    self.scheduler.step(metric)
+                    self.step += 1
 
             # Save and sample
             if self.accelerator.is_main_process and (epoch + 1) % self.save_and_sample_every == 0:

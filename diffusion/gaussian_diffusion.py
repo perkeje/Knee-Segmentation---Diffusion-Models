@@ -33,7 +33,6 @@ class GaussianDiffusion(nn.Module):
     ):
         super().__init__()
         assert not (type(self) is GaussianDiffusion and model.channels != model.out_dim)
-        assert not model.random_or_learned_sinusoidal_cond
         self.model = model
         self.channels = self.model.channels
         self.class_weights = class_weights
