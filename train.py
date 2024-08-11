@@ -14,7 +14,7 @@ if __name__ == "__main__":
     mean, std = compute_mean_std("./data/splitted/train")
     print("Mean and std:")
     print(mean, std)
-    model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=mean, norm_std=std)
+    model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=0, norm_std=1)
     image_size = 384
     class_weights = calculate_class_weights("./data/splitted/train")
     print("Class weights:")
@@ -32,11 +32,11 @@ if __name__ == "__main__":
         train_images_folder="./data/splitted/train",
         test_segmentations_folder="./data/splitted/test_masks",
         test_images_folder="./data/splitted/test",
-        batch_size=4,
+        batch_size=8,
         val_size=0.4,
         val_metric_size=4,
         lr=1e-4,
-        epochs=500,
+        epochs=250,
         adam_betas=(0.9, 0.99),
         save_and_sample_every=20,
         es_patience=6,

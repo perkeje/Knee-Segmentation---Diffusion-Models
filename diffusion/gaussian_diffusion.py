@@ -216,9 +216,7 @@ class GaussianDiffusion(nn.Module):
         raw,
         batch_size=16,
         return_all_timesteps=False,
-        cond_fn=None,
-        guidance_kwargs=None,
-        disble_bar=False,
+        disable_bar=False,
     ):
         device = self.class_weights.device
 
@@ -227,18 +225,13 @@ class GaussianDiffusion(nn.Module):
         )
         segmentations = [segmentation]
 
-        x_start = None
-
         for t in tqdm(
             reversed(range(0, self.num_timesteps)),
             desc="Sampling loop time step",
             total=self.num_timesteps,
-            disable=disble_bar,
+            disable=disable_bar,
         ):
-            self_cond = x_start if self.self_condition else None
-            segmentation, x_start = self.p_sample(
-                segmentation, raw, t, self_cond, cond_fn, guidance_kwargs
-            )
+            segmentation, x_start = self.p_sample(segmentation, raw, t)
             if return_all_timesteps and t % 10 == 0:
                 segmentations.append(segmentation)
 
@@ -266,13 +259,6 @@ class GaussianDiffusion(nn.Module):
 
         # Sample noisy image
         segmentation = self.q_sample(x_start=x_start, t=t, noise=noise)
-
-        # Self-conditioning (if applicable)
-        x_self_cond = None
-        if self.self_condition and random.random() < 0.5:
-            with torch.no_grad():
-                x_self_cond = self.model_predictions(segmentation, raw, t).pred_x_start
-                x_self_cond.detach_()
 
         # Predict and take gradient step
         model_out = self.model(segmentation, raw, t)

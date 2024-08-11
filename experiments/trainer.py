@@ -23,7 +23,7 @@ class Trainer:
         test_segmentations_folder,
         test_images_folder,
         *,
-        batch_size=4,
+        batch_size=8,
         val_size=0.4,
         val_metric_size=4,
         lr=1e-4,
@@ -90,7 +90,6 @@ class Trainer:
             (val_metric_index + i) % len(self.test_ds) for i in range(self.val_metric_size * 160)
         ]
         val_metric_ds = Subset(self.test_ds, subset_indices)
-        print(len(val_metric_ds))
         self.val_metric_dl = DataLoader(
             val_metric_ds,
             batch_size=self.batch_size,
@@ -148,17 +147,20 @@ class Trainer:
         if self.log_path.exists():
             self.load_log()
             self.best_metric = self.logs[-1]["best_metric"]
-            self.step = self.logs[-1]["step"]
+            self.step = self.logs[-1]["step"] + 1
 
-    def append_to_log(self, step, loss, val_loss, metric, best_metric):
+    def append_to_log(self, step, lr, loss, val_loss, metric, val_iou, val_f1, best_metric):
         if not self.accelerator.is_local_main_process:
             return
         self.logs.append(
             {
                 "step": step,
+                "lr": lr,
                 "loss": loss,
                 "val_loss": val_loss,
                 "metric": metric,
+                "val_iou": val_iou,
+                "val_f1": val_f1,
                 "best_metric": best_metric,
             }
         )
@@ -190,12 +192,13 @@ class Trainer:
                     self.accelerator.backward(loss)
                     self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
-                    train_bar.update(1)
-                    train_bar.set_postfix(
-                        train_loss=loss.item(),
-                        lr=self.scheduler.get_last_lr() / self.accelerator.num_processes,
-                        gpu_lr=self.scheduler.get_last_lr(),
-                    )
+                    if self.accelerator.is_main_process:
+                        train_bar.update(1)
+                        train_bar.set_postfix(
+                            train_loss=loss.item(),
+                            lr=self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
+                            gpu_lr=self.scheduler.get_last_lr()[0],
+                        )
                 train_bar.close()
                 self.accelerator.wait_for_everyone()
 
@@ -206,12 +209,8 @@ class Trainer:
                 iou_list = []
                 with torch.no_grad():
                     with tqdm(
-                        total=len(self.val_dl)
-                        + self.val_metric_size
-                        * 160
-                        // self.batch_size
-                        // self.accelerator.num_processes,
-                        desc=f"/tValidating epoch {epoch + 1}",
+                        total=len(self.val_dl) + len(self.val_metric_dl),
+                        desc=f"Validating epoch {epoch + 1}",
                         colour="blue",
                         disable=not self.accelerator.is_main_process,
                     ) as val_bar:
@@ -242,33 +241,40 @@ class Trainer:
                             iou_list.append(iou)
                             val_bar.update(1)
 
-                    self.accelerator.wait_for_everyone()
-                    val_loss = torch.tensor(val_loss)
-                    f1_list = torch.tensor(f1_list)
-                    iou_list = torch.tensor(iou_list)
+                        self.accelerator.wait_for_everyone()
+                        val_loss = torch.tensor(val_loss)
+                        f1_list = torch.tensor(f1_list)
+                        iou_list = torch.tensor(iou_list)
 
-                    val_loss = self.accelerator.gather(val_loss)
-                    f1 = self.accelerator.gather(f1_list)
-                    iou = self.accelerator.gather(iou_list)
+                        val_loss = self.accelerator.gather(val_loss)
+                        f1 = self.accelerator.gather(f1_list)
+                        iou = self.accelerator.gather(iou_list)
 
-                    if self.accelerator.is_main_process:
-                        val_loss = val_loss.mean().item()
-                        f1 = f1.mean().item()
-                        iou = iou.mean().item()
-                        val_bar.close()
-                        metric = f1 + iou
-                        val_bar.set_postfix(val_loss=val_loss, f1=f1, iou=iou, metric=metric)
-                        if metric > self.best_metric:
-                            self.best_metric = metric
-                            self.accelerator.save_state(self.best_checkpoint_path)
-                            self.no_improvement_epochs = 0
-                        else:
-                            self.no_improvement_epochs += 1
+                        if self.accelerator.is_main_process:
+                            val_loss = val_loss.mean().item()
+                            f1 = f1.mean().item()
+                            iou = iou.mean().item()
+                            metric = f1 + iou
+                            val_bar.set_postfix(val_loss=val_loss, f1=f1, iou=iou, metric=metric)
+                            if metric > self.best_metric:
+                                self.best_metric = metric
+                                self.accelerator.save_state(self.best_checkpoint_path)
+                                self.no_improvement_epochs = 0
+                            else:
+                                self.no_improvement_epochs += 1
 
-                        self.append_to_log(
-                            self.step, loss.item(), val_loss, metric, self.best_metric
-                        )
-                        self.accelerator.save_state(self.last_checkpoint_path)
+                            self.append_to_log(
+                                self.step,
+                                self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
+                                loss.item(),
+                                val_loss,
+                                metric,
+                                iou,
+                                f1,
+                                self.best_metric,
+                            )
+                            self.accelerator.save_state(self.last_checkpoint_path)
+                            val_bar.close()
 
                     self.scheduler.step(metric)
                     self.step += 1
@@ -278,7 +284,7 @@ class Trainer:
 
                 with torch.no_grad():
                     milestone = (epoch + 1) // self.save_and_sample_every
-                    validation_sample = self.val_ds[0]
+                    validation_sample = self.test_ds[80]
                     raw = validation_sample[0].unsqueeze(0)
                     with self.accelerator.autocast():
                         sampled_images = self.model.sample(raw=raw, batch_size=1)

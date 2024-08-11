@@ -250,7 +250,7 @@ class Unet(nn.Module):
         self.channels = channels
         self.mean = norm_mean
         self.std = norm_std
-        input_channels = channels * 2
+        input_channels = channels
 
         init_dim = default(init_dim, dim)
         self.init_conv_segmentation = nn.Conv2d(input_channels, init_dim, 7, padding=3)
