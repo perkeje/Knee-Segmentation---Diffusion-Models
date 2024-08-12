@@ -54,11 +54,11 @@ class MriKneeDataset(data.Dataset):
                 self.latest_subject = self.transformations(self.latest_subject)
 
         raw_img = self.latest_subject.raw_img.data.squeeze()[slice_index, :, :]
-        raw_img = raw_img.unsqueeze(0).float()
+        raw_img = raw_img.unsqueeze(0).half()
         mask = F.one_hot(
             self.latest_subject.mask_img.data.squeeze().to(dtype=torch.int64)[slice_index, :, :],
             num_classes=6,
         )
-        mask = mask.permute(2, 0, 1).float()
+        mask = mask.permute(2, 0, 1).half()
 
         return raw_img, mask, slice_index

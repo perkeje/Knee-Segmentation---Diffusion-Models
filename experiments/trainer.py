@@ -32,6 +32,7 @@ class Trainer:
         save_and_sample_every=20,
         es_patience=10,
         lr_patience=5,
+        gradient_accumulation_steps=4,
         results_folder="./results",
         checkpoint_folder="./results/checkpoints",
         best_checkpoint="best_checkpoint",
@@ -41,7 +42,7 @@ class Trainer:
         super().__init__()
         set_seed(42)
 
-        self.accelerator = Accelerator()
+        self.accelerator = Accelerator(gradient_accumulation_steps=gradient_accumulation_steps)
 
         self.save_and_sample_every = save_and_sample_every
         self.batch_size = batch_size
@@ -72,7 +73,7 @@ class Trainer:
         self.train_dl = DataLoader(
             self.train_ds,
             batch_size=self.batch_size,
-            shuffle=True,
+            shuffle=False,
             pin_memory=True,
             num_workers=4 * self.accelerator.num_processes,
         )
@@ -80,7 +81,7 @@ class Trainer:
         self.val_dl = DataLoader(
             self.val_ds,
             batch_size=self.batch_size,
-            shuffle=True,
+            shuffle=False,
             pin_memory=True,
             num_workers=4 * self.accelerator.num_processes,
         )
@@ -173,7 +174,7 @@ class Trainer:
     def train(self):
         for epoch in range(self.step, self.epochs):
             self.model.train()
-            print("\n")
+            self.accelerator.print("\n")
             losses = []
             with tqdm(
                 total=len(self.train_dl),
@@ -185,26 +186,29 @@ class Trainer:
                     self.optimizer.zero_grad()
                     segmentation = data[1]
                     raw = data[0]
-                    with self.accelerator.autocast():
-                        loss = self.model(segmentation, raw)
+                    with self.accelerator.accumulate(self.model):
+                        with self.accelerator.autocast():
+                            loss = self.model(segmentation, raw)
 
-                    self.accelerator.backward(loss)
-                    self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
-                    self.optimizer.step()
-                    if self.accelerator.is_main_process:
-                        train_bar.update(1)
-                        train_bar.set_postfix(
-                            train_loss=loss.item(),
-                            lr=self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
-                            gpu_lr=self.scheduler.get_last_lr()[0],
-                        )
-                    losses.append(loss.item())
+                        self.accelerator.backward(loss)
+                        if self.accelerator.sync_gradients:
+                            self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+                        self.optimizer.step()
+                        if self.accelerator.is_main_process:
+                            train_bar.update(1)
+                            train_bar.set_postfix(
+                                train_loss=loss.item(),
+                                lr=self.scheduler.get_last_lr()[0]
+                                / self.accelerator.num_processes,
+                                gpu_lr=self.scheduler.get_last_lr()[0],
+                            )
+                        losses.append(loss.item())
                 self.accelerator.wait_for_everyone()
-                losses = torch.tensor(losses)
-                loss = self.accelerator.gather(losses)
+                losses = torch.tensor(losses).to(self.accelerator.device)
+                loss = self.accelerator.gather(losses).mean().item()
                 if self.accelerator.is_main_process:
                     train_bar.set_postfix(
-                        train_loss=loss.mean().item(),
+                        train_loss=loss,
                         lr=self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
                         gpu_lr=self.scheduler.get_last_lr()[0],
                     )
@@ -233,11 +237,11 @@ class Trainer:
                             segmentation = data[1]
                             raw = data[0]
                             with self.accelerator.autocast():
-                                sampled = self.model.sample(
+                                sampled = self.model.module.sample(
                                     raw=raw, batch_size=self.batch_size, disable_bar=True
                                 )
-                            pred_mask_flat = torch.argmax(sampled, dim=1).flatten()
-                            true_mask_flat = torch.argmax(segmentation, dim=1).flatten()
+                            pred_mask_flat = torch.argmax(sampled, dim=1).flatten().cpu()
+                            true_mask_flat = torch.argmax(segmentation, dim=1).flatten().cpu()
 
                             f1 = f1_score(true_mask_flat, pred_mask_flat, average="micro")
                             iou = jaccard_score(
@@ -250,19 +254,20 @@ class Trainer:
                             val_bar.update(1)
 
                         self.accelerator.wait_for_everyone()
-                        val_loss = torch.tensor(val_loss)
-                        f1_list = torch.tensor(f1_list)
-                        iou_list = torch.tensor(iou_list)
+                        val_loss = torch.tensor(val_loss).to(self.accelerator.device)
+                        f1_list = torch.tensor(f1_list).to(self.accelerator.device)
+                        iou_list = torch.tensor(iou_list).to(self.accelerator.device)
 
                         val_loss = self.accelerator.gather(val_loss)
                         f1 = self.accelerator.gather(f1_list)
                         iou = self.accelerator.gather(iou_list)
 
+                        val_loss = val_loss.mean().item()
+                        f1 = f1.mean().item()
+                        iou = iou.mean().item()
+                        metric = f1 + iou
+
                         if self.accelerator.is_main_process:
-                            val_loss = val_loss.mean().item()
-                            f1 = f1.mean().item()
-                            iou = iou.mean().item()
-                            metric = f1 + iou
                             val_bar.set_postfix(val_loss=val_loss, f1=f1, iou=iou, metric=metric)
                             if metric > self.best_metric:
                                 self.best_metric = metric
@@ -274,7 +279,7 @@ class Trainer:
                             self.append_to_log(
                                 self.step,
                                 self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
-                                loss.item(),
+                                loss,
                                 val_loss,
                                 metric,
                                 iou,
@@ -295,7 +300,7 @@ class Trainer:
                     validation_sample = self.test_ds[80]
                     raw = validation_sample[0].unsqueeze(0)
                     with self.accelerator.autocast():
-                        sampled_images = self.model.sample(raw=raw, batch_size=1)
+                        sampled_images = self.model.module.sample(raw=raw, batch_size=1)
 
                     # Apply argmax and coloring
                     colored_sampled_images = apply_argmax_and_coloring(sampled_images) / 255.0

@@ -24,7 +24,7 @@ class GaussianDiffusion(nn.Module):
         *,
         image_size,
         class_weights=torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
-        timesteps=500,
+        timesteps=100,
         objective="pred_x0",
         beta_schedule="linear",
         schedule_fn_kwargs={},
@@ -34,7 +34,7 @@ class GaussianDiffusion(nn.Module):
         assert not (type(self) is GaussianDiffusion and model.channels != model.out_dim)
         self.model = model
         self.channels = self.model.channels
-        self.class_weights = class_weights.to(next(self.model.parameters()).device)
+        self.class_weights = torch.log1p(class_weights)
         self.image_size = image_size
 
         self.objective = objective
@@ -215,7 +215,7 @@ class GaussianDiffusion(nn.Module):
         return_all_timesteps=False,
         disable_bar=False,
     ):
-        device = self.model.device
+        device = raw.device
 
         segmentation = torch.randn(
             (batch_size, self.channels, self.image_size, self.image_size), device=device
@@ -247,6 +247,8 @@ class GaussianDiffusion(nn.Module):
         )
 
     def p_losses(self, raw, x_start, t, noise=None):
+        if self.class_weights.device != next(self.model.parameters()).device:
+            self.class_weights = self.class_weights.to(next(self.model.parameters()).device)
         _, c, _, _ = x_start.shape
 
         # Ensure the number of channels (c) matches the number of classes
