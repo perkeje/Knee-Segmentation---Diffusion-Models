@@ -1,6 +1,6 @@
 import sys
 import os
-
+import torch
 
 # Add the root directory of the project to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -8,20 +8,51 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from diffusion.gaussian_diffusion import GaussianDiffusion
 from experiments.trainer import Trainer
 from unet.unet import Unet
-from utils.preprocessing import calculate_class_weights, compute_mean_std
+
+
+def load_or_compute_mean_std(data_dir):
+    mean_std_path = os.path.join(data_dir, "mean_std.pt")
+
+    if os.path.exists(mean_std_path):
+        mean_std = torch.load(mean_std_path)
+        mean, std = mean_std["mean"], mean_std["std"]
+        print("Loaded mean and std from file.")
+    else:
+        print("Mean and std not found. You need to calculate these with pretrain.py first.")
+        sys.exit(1)
+
+    return mean, std
+
+
+def load_or_compute_class_weights(data_dir):
+    class_weights_path = os.path.join(data_dir, "class_weights.pt")
+
+    if os.path.exists(class_weights_path):
+        class_weights = torch.load(class_weights_path)
+        print("Loaded class weights from file.")
+    else:
+        print("Class weights not found. You need to calculate these with pretrain.py first.")
+        sys.exit(1)
+
+    return class_weights
+
 
 if __name__ == "__main__":
-    mean, std = compute_mean_std("./data/splitted/train")
+    params_dir = "./results/params"
+
+    mean, std = load_or_compute_mean_std(params_dir)
     print("Mean and std:")
     print(mean, std)
-    model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=0, norm_std=1)
-    image_size = 384
-    class_weights = calculate_class_weights("./data/splitted/train")
+
+    model = Unet(dim=32, dim_mults=(1, 2, 4, 8, 16), norm_mean=mean, norm_std=std)
+
+    class_weights = load_or_compute_class_weights(params_dir)
     print("Class weights:")
     print(class_weights)
+
     diffusion = GaussianDiffusion(
         model,
-        image_size=image_size,
+        image_size=384,
         timesteps=100,
         class_weights=class_weights,
     )
@@ -32,7 +63,7 @@ if __name__ == "__main__":
         train_images_folder="./data/splitted/train",
         test_segmentations_folder="./data/splitted/test_masks",
         test_images_folder="./data/splitted/test",
-        batch_size=8,
+        batch_size=16,
         val_size=0.4,
         val_metric_size=4,
         lr=1e-4,

@@ -1,4 +1,3 @@
-from random import random
 from functools import partial
 import torch
 from torch import nn
@@ -35,7 +34,7 @@ class GaussianDiffusion(nn.Module):
         assert not (type(self) is GaussianDiffusion and model.channels != model.out_dim)
         self.model = model
         self.channels = self.model.channels
-        self.class_weights = class_weights
+        self.class_weights = class_weights.to(next(self.model.parameters()).device)
         self.image_size = image_size
 
         self.objective = objective
@@ -63,8 +62,6 @@ class GaussianDiffusion(nn.Module):
 
         (timesteps,) = betas.shape
         self.num_timesteps = int(timesteps)
-
-        # helper function to register buffer from float64 to float32
 
         def register_buffer(name, val):
             self.register_buffer(name, val.to(torch.float32))
@@ -218,7 +215,7 @@ class GaussianDiffusion(nn.Module):
         return_all_timesteps=False,
         disable_bar=False,
     ):
-        device = self.class_weights.device
+        device = self.model.device
 
         segmentation = torch.randn(
             (batch_size, self.channels, self.image_size, self.image_size), device=device
@@ -306,6 +303,3 @@ class GaussianDiffusion(nn.Module):
 
         segmentation = self.normalize(segmentation)
         return self.p_losses(raw, segmentation, t, *args, **kwargs)
-
-    def print_cw_device(self):
-        print(self.class_weights.device)

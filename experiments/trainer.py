@@ -55,7 +55,6 @@ class Trainer:
             train_images_folder,
             train_segmentations_folder,
         )
-
         test_ds = MriKneeDataset(
             test_images_folder,
             test_segmentations_folder,
@@ -73,7 +72,7 @@ class Trainer:
         self.train_dl = DataLoader(
             self.train_ds,
             batch_size=self.batch_size,
-            shuffle=False,
+            shuffle=True,
             pin_memory=True,
             num_workers=4 * self.accelerator.num_processes,
         )
@@ -175,7 +174,7 @@ class Trainer:
         for epoch in range(self.step, self.epochs):
             self.model.train()
             print("\n")
-
+            losses = []
             with tqdm(
                 total=len(self.train_dl),
                 desc=f"Epoch {epoch + 1}/{self.epochs}",
@@ -199,8 +198,17 @@ class Trainer:
                             lr=self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
                             gpu_lr=self.scheduler.get_last_lr()[0],
                         )
-                train_bar.close()
+                    losses.append(loss.item())
                 self.accelerator.wait_for_everyone()
+                losses = torch.tensor(losses)
+                loss = self.accelerator.gather(losses)
+                if self.accelerator.is_main_process:
+                    train_bar.set_postfix(
+                        train_loss=loss.mean().item(),
+                        lr=self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
+                        gpu_lr=self.scheduler.get_last_lr()[0],
+                    )
+                train_bar.close()
 
                 # Validation
                 self.model.eval()
