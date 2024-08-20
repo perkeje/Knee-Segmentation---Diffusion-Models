@@ -243,11 +243,11 @@ class Trainer:
                             pred_mask_flat = torch.argmax(sampled, dim=1).flatten().cpu()
                             true_mask_flat = torch.argmax(segmentation, dim=1).flatten().cpu()
 
-                            f1 = f1_score(true_mask_flat, pred_mask_flat, average="micro")
+                            f1 = f1_score(true_mask_flat, pred_mask_flat, average="macro")
                             iou = jaccard_score(
                                 true_mask_flat,
                                 pred_mask_flat,
-                                average="micro",
+                                average="macro",
                             )
                             f1_list.append(f1)
                             iou_list.append(iou)

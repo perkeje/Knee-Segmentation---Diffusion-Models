@@ -30,25 +30,30 @@ def compute_mean_std(adapt_dir, exts=["nii", "nii.gz"]):
     paths = []
     for ext in exts:
         files = glob.glob(os.path.join(adapt_dir, "**", f"*.{ext}"), recursive=True)
-        paths.extend([os.path.basename(p) for p in files])
+        paths.extend(files)
 
-    mean = 0.0
-    std = 0.0
-    M2 = 0.0
-    count = 0
+    mean = torch.tensor(0.0, dtype=torch.double)
+    M2 = torch.tensor(0.0, dtype=torch.double)
+    count = torch.tensor(0, dtype=torch.double)
 
     print("Calculating dataset mean and std...")
     for path in tqdm(paths):
-        img = tio.ScalarImage(os.path.join(adapt_dir, path)).data.squeeze()
+        img = tio.ScalarImage(path).data.squeeze().flatten()
         img = img.to(dtype=torch.double)
-        img_mean = img.mean()
-        img_M2 = img.var()
-        delta = img_mean - mean
-        mean += delta / (count + 1)
-        M2 += img_M2 + delta**2 * count / (count + 1)
-        count += 1
+        batch_count = img.numel()
 
-    std = (M2 / count) ** 0.5
+        batch_mean = img.mean()
+        delta = batch_mean - mean
+
+        count += batch_count
+        mean += delta * batch_count / count
+        M2 += (
+            img.var(unbiased=False) * batch_count
+            + delta**2 * batch_count * (count - batch_count) / count
+        )
+
+    variance = M2 / count
+    std = torch.sqrt(variance)
 
     return mean, std
 
@@ -66,6 +71,5 @@ def calculate_class_weights(adapt_dir, num_classes=6, exts=["nii", "nii.gz"]):
         for i in range(num_classes):
             class_counts[i] += torch.sum(seg == i)
 
-    total_pixels = class_counts.sum()
-    class_weights = total_pixels / (num_classes * class_counts)
-    return class_weights.clone().detach()
+    class_weights = 1 / (class_counts / class_counts.sum())
+    return class_weights
