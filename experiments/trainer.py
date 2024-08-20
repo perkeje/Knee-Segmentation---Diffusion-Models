@@ -32,6 +32,7 @@ class Trainer:
         save_and_sample_every=20,
         es_patience=10,
         lr_patience=5,
+        patience_warmup=10,
         gradient_accumulation_steps=4,
         results_folder="./results",
         checkpoint_folder="./results/checkpoints",
@@ -50,6 +51,7 @@ class Trainer:
         self.lr = lr * self.accelerator.num_processes
         self.image_size = diffusion_model.image_size
         self.val_metric_size = val_metric_size
+        self.patience_warmup = patience_warmup
 
         # dataset and dataloader
         self.train_ds = MriKneeDataset(
@@ -288,8 +290,9 @@ class Trainer:
                             )
                             self.accelerator.save_state(self.last_checkpoint_path)
                             val_bar.close()
+                            if self.step >= self.patience_warmup:
+                                self.scheduler.step(metric)
 
-                    self.scheduler.step(metric)
                     self.step += 1
 
             # Save and sample
@@ -298,7 +301,7 @@ class Trainer:
                 with torch.no_grad():
                     milestone = (epoch + 1) // self.save_and_sample_every
                     validation_sample = self.test_ds[80]
-                    raw = validation_sample[0].unsqueeze(0)
+                    raw = validation_sample[0].unsqueeze(0).to(self.accelerator.device)
                     with self.accelerator.autocast():
                         sampled_images = self.model.module.sample(raw=raw, batch_size=1)
 
@@ -311,7 +314,11 @@ class Trainer:
                     )
 
             # Early stopping
-            if self.accelerator.is_main_process and self.no_improvement_epochs >= self.es_patience:
+            if (
+                self.accelerator.is_main_process
+                and self.step >= self.patience_warmup
+                and self.no_improvement_epochs >= self.es_patience
+            ):
                 print(f"Early stopping at epoch {epoch + 1}")
                 break
 
