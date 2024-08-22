@@ -34,7 +34,7 @@ if __name__ == "__main__":
         batch_size=8,
         val_size=0.4,
         val_metric_size=4,
-        lr=1e-4,
+        lr=1e-5,
         epochs=250,
         adam_betas=(0.9, 0.99),
         save_and_sample_every=5,

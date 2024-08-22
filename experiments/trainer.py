@@ -32,8 +32,8 @@ class Trainer:
         save_and_sample_every=20,
         es_patience=10,
         lr_patience=5,
-        patience_warmup=10,
-        gradient_accumulation_steps=4,
+        patience_warmup=20,
+        gradient_accumulation_steps=2,
         results_folder="./results",
         checkpoint_folder="./results/checkpoints",
         best_checkpoint="best_checkpoint",
@@ -58,14 +58,17 @@ class Trainer:
             train_images_folder,
             train_segmentations_folder,
         )
-        test_ds = MriKneeDataset(
+        self.test_ds = MriKneeDataset(
             test_images_folder,
             test_segmentations_folder,
         )
-        generator = torch.Generator().manual_seed(42)
-        self.val_ds, self.test_ds = random_split(
-            test_ds, [val_size, 1 - val_size], generator=generator
-        )
+
+        val_index = randint(0, len(self.test_ds) // 160) * 160
+        subset_indices = [
+            (val_index + i) % len(self.test_ds)
+            for i in range(int(len(self.test_ds) * val_size) // 160 * 160)
+        ]
+        self.val_ds = Subset(self.test_ds, subset_indices)
         self.accelerator.print(
             "Training size: "
             + str(len(self.train_ds))
@@ -118,7 +121,9 @@ class Trainer:
         self.step = 0
 
         # Scheduler and early stopping
-        self.scheduler = ReduceLROnPlateau(self.optimizer, "max", patience=lr_patience)
+        self.scheduler = ReduceLROnPlateau(
+            self.optimizer, "max", patience=lr_patience * self.accelerator.num_processes
+        )
         self.es_patience = es_patience
         self.best_metric = 0
         self.no_improvement_epochs = 0
@@ -216,25 +221,33 @@ class Trainer:
                     )
                 train_bar.close()
 
-                # Validation
-                self.model.eval()
-                val_loss = []
-                f1_list = []
-                iou_list = []
-                with torch.no_grad():
-                    with tqdm(
-                        total=len(self.val_dl) + len(self.val_metric_dl),
-                        desc=f"Validating epoch {epoch + 1}",
-                        colour="blue",
-                        disable=not self.accelerator.is_main_process,
-                    ) as val_bar:
-                        for data in self.val_dl:
-                            segmentation = data[1]
-                            raw = data[0]
-                            with self.accelerator.autocast():
-                                val_loss.append(self.model(segmentation, raw).item())
-                            val_bar.update(1)
+            # Validation
+            self.model.eval()
+            val_loss = []
+            f1_list = []
+            iou_list = []
+            iou = 0.0
+            f1 = 0.0
+            metric = 0.0
+            with torch.no_grad():
+                with tqdm(
+                    total=len(self.val_dl) + len(self.val_metric_dl),
+                    desc=f"Validating epoch {epoch + 1}",
+                    colour="blue",
+                    disable=not self.accelerator.is_main_process,
+                ) as val_bar:
+                    for data in self.val_dl:
+                        segmentation = data[1]
+                        raw = data[0]
+                        with self.accelerator.autocast():
+                            val_loss.append(self.model(segmentation, raw).item())
+                        val_bar.update(1)
+                    self.accelerator.wait_for_everyone()
+                    val_loss = torch.tensor(val_loss).to(self.accelerator.device)
+                    val_loss = self.accelerator.gather(val_loss)
+                    val_loss = val_loss.mean().item()
 
+                    if self.step >= self.patience_warmup:
                         for data in self.val_metric_dl:
                             segmentation = data[1]
                             raw = data[0]
@@ -256,44 +269,43 @@ class Trainer:
                             val_bar.update(1)
 
                         self.accelerator.wait_for_everyone()
-                        val_loss = torch.tensor(val_loss).to(self.accelerator.device)
                         f1_list = torch.tensor(f1_list).to(self.accelerator.device)
                         iou_list = torch.tensor(iou_list).to(self.accelerator.device)
 
-                        val_loss = self.accelerator.gather(val_loss)
                         f1 = self.accelerator.gather(f1_list)
                         iou = self.accelerator.gather(iou_list)
 
-                        val_loss = val_loss.mean().item()
                         f1 = f1.mean().item()
                         iou = iou.mean().item()
                         metric = f1 + iou
+                        self.scheduler.step(metric)
+                    else:
+                        for data in self.val_metric_dl:
+                            val_bar.update(1)
 
-                        if self.accelerator.is_main_process:
-                            val_bar.set_postfix(val_loss=val_loss, f1=f1, iou=iou, metric=metric)
-                            if metric > self.best_metric:
-                                self.best_metric = metric
-                                self.accelerator.save_state(self.best_checkpoint_path)
-                                self.no_improvement_epochs = 0
-                            else:
-                                self.no_improvement_epochs += 1
+                    if self.accelerator.is_main_process:
+                        val_bar.set_postfix(val_loss=val_loss, f1=f1, iou=iou, metric=metric)
+                        if metric > self.best_metric:
+                            self.best_metric = metric
+                            self.accelerator.save_state(self.best_checkpoint_path)
+                            self.no_improvement_epochs = 0
+                        elif self.step >= self.patience_warmup:
+                            self.no_improvement_epochs += 1
 
-                            self.append_to_log(
-                                self.step,
-                                self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
-                                loss,
-                                val_loss,
-                                metric,
-                                iou,
-                                f1,
-                                self.best_metric,
-                            )
-                            self.accelerator.save_state(self.last_checkpoint_path)
-                            val_bar.close()
-                            if self.step >= self.patience_warmup:
-                                self.scheduler.step(metric)
+                        self.append_to_log(
+                            self.step,
+                            self.scheduler.get_last_lr()[0] / self.accelerator.num_processes,
+                            loss,
+                            val_loss,
+                            metric,
+                            iou,
+                            f1,
+                            self.best_metric,
+                        )
+                        self.accelerator.save_state(self.last_checkpoint_path)
+                        val_bar.close()
 
-                    self.step += 1
+            self.step += 1
 
             # Save and sample
             if self.accelerator.is_main_process and (epoch + 1) % self.save_and_sample_every == 0:
@@ -314,11 +326,7 @@ class Trainer:
                     )
 
             # Early stopping
-            if (
-                self.accelerator.is_main_process
-                and self.step >= self.patience_warmup
-                and self.no_improvement_epochs >= self.es_patience
-            ):
+            if self.accelerator.is_main_process and self.no_improvement_epochs >= self.es_patience:
                 print(f"Early stopping at epoch {epoch + 1}")
                 break
 
