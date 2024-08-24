@@ -10,7 +10,6 @@ data/splitted/*
 
 exploration/*
 
-predict.py
 
 results/checkpoints/*
 results/figures/*

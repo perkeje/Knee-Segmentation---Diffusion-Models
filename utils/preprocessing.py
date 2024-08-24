@@ -9,7 +9,7 @@ import torchio as tio
 def load_mri(path):
     """Load MRI data from a file in a 3D tensor"""
     img = nib.load(path)
-    return img.get_fdata()
+    return img.get_fdata(), img.affine, img.header
 
 
 def save_mri(tensor, affine, header, name, save_dir):
