@@ -62,3 +62,53 @@ class MriKneeDataset(data.Dataset):
         mask = mask.permute(2, 0, 1).half()
 
         return raw_img, mask, slice_index
+
+
+class MriKneeDataset3D(data.Dataset):
+    def __init__(
+        self,
+        raw_dir,
+        masks_dir,
+        channels=6,
+        transform=False,
+        exts=["nii", "nii.gz"],
+    ):
+        super().__init__()
+        self.raw_dir = raw_dir
+        self.masks_dir = masks_dir
+        self.channels = channels
+        self.exts = exts
+        self.paths = []
+        for ext in exts:
+            files = glob.glob(os.path.join(raw_dir, "**", f"*.{ext}"), recursive=True)
+            self.paths.extend([os.path.basename(p) for p in files])
+
+        random.shuffle(self.paths)
+
+        self.transform = transform
+        self.transformations = T.Compose(
+            [
+                tio.RandomAffine(degrees=(0, 5, 5)),
+            ]
+        )
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, index):
+        name = self.paths[index]
+        subject = tio.Subject(
+            raw_img=tio.ScalarImage(os.path.join(self.raw_dir, name)),
+            mask_img=tio.LabelMap(os.path.join(self.masks_dir, name)),
+        )
+        if self.transform:
+            subject = self.transformations(subject)
+
+        raw_img = subject.raw_img.data.half()
+        mask = F.one_hot(
+            subject.mask_img.data.squeeze().to(dtype=torch.int64),
+            num_classes=6,
+        )
+        mask = mask.permute(3, 0, 1, 2).half()
+
+        return raw_img, mask

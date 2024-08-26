@@ -1,0 +1,4 @@
+Average Dice Coefficient: 0.873429751017011
+Average Jaccard Index: 0.7924280015642293
+Average Dice Coefficient Smoothed: 0.8921297289528436
+Average Jaccard Index Smoothed: 0.8209628362707068
