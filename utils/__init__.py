@@ -73,3 +73,42 @@ def load_class_weights(data_dir):
         sys.exit(1)
 
     return class_weights
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+def plot_confusion_matrix(y_true, y_pred, class_names, normalize=True, title='Confusion Matrix'):
+    """
+    Plots a confusion matrix with options for normalization to handle imbalanced datasets.
+    
+    Parameters:
+    - y_true: list or array of true labels
+    - y_pred: list or array of predicted labels
+    - class_names: list of class names corresponding to the labels
+    - normalize: boolean, whether to normalize the confusion matrix
+    - title: title of the confusion matrix plot
+    """
+    # Compute the confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Normalize the confusion matrix if the normalize flag is set to True
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+    # Set up the matplotlib figure and axes
+    plt.figure(figsize=(15,15))
+    sns.set(font_scale=1.2)
+    
+    # Use seaborn to create a heatmap
+    sns.heatmap(cm, annot=True, fmt='.2f' if normalize else 'd', cmap='Blues', cbar=False,
+                xticklabels=class_names, yticklabels=class_names)
+    
+    # Set plot labels and title
+    plt.ylabel('Prava oznaka')
+    plt.xlabel('Predviđena oznaka')
+    plt.title(title)
+    plt.savefig("conf.png")
+    plt.show()
